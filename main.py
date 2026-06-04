@@ -18,7 +18,7 @@ from datetime import datetime
 import numpy as np
 import joblib
 import librosa
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
@@ -383,6 +383,104 @@ async def list_recordings():
                 'saved_at': datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S'),
             })
     return JSONResponse(content={'total': len(files), 'recordings': files})
+
+
+@app.post("/predict-url")
+async def predict_from_url(request: Request):
+    """
+    Automation endpoint for n8n / AWS Lambda / any webhook.
+    Accepts audio URL (S3 pre-signed URL or any HTTP URL), downloads it,
+    analyzes gender, saves recording, sends Telegram notification.
+
+    Request body (JSON):
+        {
+            "url":          "https://s3.amazonaws.com/.../voice.wav",
+            "advisor_id":   "12345",
+            "advisor_name": "Priya Sharma"   (optional)
+        }
+
+    Response:
+        { "ensemble": {...}, "svm": {...}, "gbm": {...}, "rf": {...},
+          "features": {...}, "advisor_id": "...", "advisor_name": "...",
+          "saved_as": "advisor_12345_20260604_153000.wav",
+          "is_female": true, "confidence": 91.2 }
+    """
+    if svm_model is None:
+        raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
+
+    body = await request.json()
+    audio_url    = body.get("url", "").strip()
+    advisor_id   = str(body.get("advisor_id", "unknown"))
+    advisor_name = str(body.get("advisor_name", "Unknown"))
+
+    if not audio_url:
+        raise HTTPException(status_code=400, detail="Missing 'url' field in request body.")
+
+    # ── 1. Download audio from URL ────────────────────────────────────────────
+    import ssl
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode    = ssl.CERT_NONE
+        req_obj = urllib.request.Request(
+            audio_url,
+            headers={"User-Agent": "VoiceGenderBot/2.0"}
+        )
+        with urllib.request.urlopen(req_obj, timeout=30, context=ctx) as resp:
+            content = resp.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to download audio from URL: {str(e)}")
+
+    file_size_kb = len(content) / 1024
+
+    # ── 2. Determine extension ────────────────────────────────────────────────
+    clean_url = audio_url.split("?")[0].lower()   # Remove query params (S3 signed URLs)
+    ext = os.path.splitext(clean_url)[1]
+    if ext not in {'.wav', '.mp3', '.ogg', '.m4a', '.flac', '.webm'}:
+        ext = '.wav'
+
+    # ── 3. Save to recordings folder ──────────────────────────────────────────
+    timestamp  = datetime.now().strftime('%Y%m%d_%H%M%S')
+    saved_name = f"advisor_{advisor_id}_{timestamp}{ext}"
+    saved_path = os.path.join(RECORDINGS_DIR, saved_name)
+
+    with open(saved_path, 'wb') as f:
+        f.write(content)
+    print(f"[URL] Downloaded {file_size_kb:.1f} KB → {saved_name}")
+
+    # ── 4. Extract features + predict ─────────────────────────────────────────
+    try:
+        features = extract_features(saved_path)
+        result   = predict_gender(features)
+
+        is_female = result['ensemble']['label'] == 'female'
+
+        result['advisor_id']           = advisor_id
+        result['advisor_name']         = advisor_name
+        result['source_url']           = audio_url
+        result['saved_as']             = saved_name
+        result['saved_kb']             = round(file_size_kb, 1)
+        result['is_female']            = is_female
+        result['telegram_configured']  = config.telegram_configured()
+
+        # ── 5. Telegram notification (background) ──────────────────────────────
+        display_name = f"{advisor_name} (ID:{advisor_id})"
+        t = threading.Thread(
+            target=_notify_async,
+            args=(result, display_name, file_size_kb),
+            daemon=True
+        )
+        t.start()
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        err_path = saved_path.replace(ext, f'_FAILED{ext}')
+        try:
+            os.rename(saved_path, err_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Audio processing error: {str(e)}")
 
 
 # Mount static files
