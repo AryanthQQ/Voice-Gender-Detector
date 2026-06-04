@@ -931,6 +931,30 @@
       return (b/1024/1024).toFixed(1) + ' MB';
     }
 
+    // ---- Convert any audio file to WAV via AudioContext ----
+    // Works with MP3, OGG, M4A, FLAC, WAV — whatever the browser supports
+    async function convertToWav(file) {
+      const arrayBuf = await file.arrayBuffer();
+      const audioCtx = new AudioContext({ sampleRate: 16000 });
+      let decoded;
+      try {
+        decoded = await audioCtx.decodeAudioData(arrayBuf);
+      } finally {
+        audioCtx.close();
+      }
+      // Mix down to mono
+      const numSamples = decoded.length;
+      const mono = new Float32Array(numSamples);
+      for (let ch = 0; ch < decoded.numberOfChannels; ch++) {
+        const chData = decoded.getChannelData(ch);
+        for (let i = 0; i < numSamples; i++) mono[i] += chData[i];
+      }
+      if (decoded.numberOfChannels > 1) {
+        for (let i = 0; i < numSamples; i++) mono[i] /= decoded.numberOfChannels;
+      }
+      return encodeWAV(mono, decoded.sampleRate);
+    }
+
     // ---- Analyze ----
     async function analyze() {
       hideError();
@@ -948,7 +972,17 @@
           formData.append('file', recordedBlob, 'recording.wav');
         } else {
           if (!uploadedFile) throw new Error('No file selected.');
-          formData.append('file', uploadedFile);
+          // Convert any format (MP3, OGG, M4A…) → WAV browser-side
+          btn.innerHTML = '<span class="spinner"></span> Converting to WAV...';
+          let wavBlob;
+          try {
+            wavBlob = await convertToWav(uploadedFile);
+          } catch (convErr) {
+            throw new Error('Could not decode audio file. Try a WAV or MP3 file.');
+          }
+          const baseName = uploadedFile.name.replace(/\.[^.]+$/, '');
+          formData.append('file', wavBlob, baseName + '.wav');
+          btn.innerHTML = '<span class="spinner"></span> Analyzing...';
         }
 
         const res = await fetch('/predict', { method: 'POST', body: formData });

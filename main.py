@@ -322,14 +322,9 @@ async def predict(file: UploadFile = File(...)):
         f.write(content)
     print(f"[SAVE] Recording saved: {saved_path} ({file_size_kb:.1f} KB)")
 
-    # ── 4. Also write to temp file for librosa processing ─────────────────────
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
-
-    # ── 5. Extract features + predict ────────────────────────────────────────
+    # ── 4. Extract features + predict (use saved file directly) ──────────────
     try:
-        features = extract_features(tmp_path)
+        features = extract_features(saved_path)
         result   = predict_gender(features)
 
         # Add saved filename to result for frontend display
@@ -348,18 +343,13 @@ async def predict(file: UploadFile = File(...)):
         return JSONResponse(content=result)
 
     except Exception as e:
-        # Clean up failed recording? Keep it for debugging but mark it
+        # Keep failed recording for debugging but mark it
         err_path = saved_path.replace(ext, f'_FAILED{ext}')
         try:
             os.rename(saved_path, err_path)
         except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"Audio processing error: {str(e)}")
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except Exception:
-            pass
 
 
 @app.get("/health")
