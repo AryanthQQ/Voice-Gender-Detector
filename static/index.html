@@ -1,0 +1,1049 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Voice Gender Detector — AI Voice Analysis</title>
+  <meta name="description" content="Detect voice gender using AI and machine learning. Upload a WAV/MP3 file or record your voice directly in the browser.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --male: #3b82f6;
+      --male-glow: #60a5fa;
+      --female: #ec4899;
+      --female-glow: #f472b6;
+      --bg: #0a0a0f;
+      --surface: #12121a;
+      --surface2: #1a1a28;
+      --surface3: #22223a;
+      --border: rgba(255,255,255,0.08);
+      --text: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #8b5cf6;
+      --accent-glow: rgba(139,92,246,0.3);
+    }
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* Animated background */
+    .bg-orbs {
+      position: fixed; inset: 0; pointer-events: none; z-index: 0;
+      overflow: hidden;
+    }
+    .orb {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(80px);
+      opacity: 0.15;
+      animation: drift 12s ease-in-out infinite;
+    }
+    .orb-1 { width: 600px; height: 600px; background: #3b82f6; top: -200px; left: -200px; animation-delay: 0s; }
+    .orb-2 { width: 500px; height: 500px; background: #ec4899; bottom: -150px; right: -150px; animation-delay: -4s; }
+    .orb-3 { width: 400px; height: 400px; background: #8b5cf6; top: 40%; left: 50%; transform: translate(-50%,-50%); animation-delay: -8s; }
+    @keyframes drift {
+      0%, 100% { transform: translate(0, 0) scale(1); }
+      33% { transform: translate(30px, -20px) scale(1.05); }
+      66% { transform: translate(-20px, 30px) scale(0.95); }
+    }
+
+    .container {
+      position: relative; z-index: 1;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+
+    /* Header */
+    header { text-align: center; margin-bottom: 56px; }
+    .logo-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      padding: 6px 16px;
+      font-size: 13px; font-weight: 500; color: var(--text-muted);
+      margin-bottom: 24px;
+    }
+    .logo-badge .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #22c55e;
+      animation: pulse-dot 2s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+    h1 {
+      font-size: clamp(2rem, 5vw, 3.5rem);
+      font-weight: 800;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 16px;
+    }
+    .subtitle {
+      font-size: 1.1rem;
+      color: var(--text-muted);
+      max-width: 520px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+
+    /* Main card */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px;
+      margin-bottom: 24px;
+      backdrop-filter: blur(20px);
+    }
+
+    /* Mode tabs */
+    .mode-tabs {
+      display: flex;
+      background: var(--surface2);
+      border-radius: 14px;
+      padding: 4px;
+      margin-bottom: 32px;
+      gap: 4px;
+    }
+    .tab-btn {
+      flex: 1; padding: 12px 16px;
+      border: none; border-radius: 10px;
+      font-family: inherit; font-size: 14px; font-weight: 600;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      color: var(--text-muted);
+      background: transparent;
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    .tab-btn.active {
+      background: var(--surface3);
+      color: var(--text);
+      box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    }
+    .tab-btn:hover:not(.active) { color: var(--text); background: rgba(255,255,255,0.04); }
+
+    /* Record section */
+    #recordSection, #uploadSection { display: none; }
+    #recordSection.active, #uploadSection.active { display: block; }
+
+    /* Visualizer */
+    .visualizer-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 180px;
+      margin-bottom: 28px;
+    }
+    #waveCanvas {
+      width: 100%; height: 100%;
+      border-radius: 16px;
+      background: var(--surface2);
+    }
+    .record-ring {
+      position: absolute;
+      width: 80px; height: 80px;
+      border-radius: 50%;
+      border: 3px solid var(--female);
+      animation: ring-pulse 1.5s ease-in-out infinite;
+      opacity: 0;
+      pointer-events: none;
+    }
+    @keyframes ring-pulse {
+      0% { transform: scale(1); opacity: 0.8; }
+      100% { transform: scale(2.2); opacity: 0; }
+    }
+    .record-ring.visible { opacity: 1; }
+
+    /* Record button */
+    .record-btn-wrap { display: flex; justify-content: center; gap: 16px; align-items: center; }
+    #recordBtn {
+      width: 72px; height: 72px;
+      border-radius: 50%;
+      border: 3px solid var(--border);
+      background: var(--surface2);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.3s ease;
+      position: relative;
+    }
+    #recordBtn .btn-icon {
+      width: 28px; height: 28px;
+      border-radius: 50%;
+      background: var(--female);
+      transition: all 0.3s ease;
+    }
+    #recordBtn.recording {
+      border-color: var(--female);
+      box-shadow: 0 0 0 4px rgba(236,72,153,0.2), 0 0 30px rgba(236,72,153,0.3);
+    }
+    #recordBtn.recording .btn-icon {
+      border-radius: 6px;
+      background: var(--female);
+    }
+    #recordBtn:hover { transform: scale(1.05); border-color: var(--female); }
+    .record-label {
+      font-size: 14px; font-weight: 500;
+      color: var(--text-muted);
+      min-width: 120px;
+    }
+    #recordTimer {
+      font-size: 13px;
+      color: var(--female);
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+    }
+
+    /* Upload section */
+    .drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: 20px;
+      padding: 48px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      background: var(--surface2);
+      position: relative;
+    }
+    .drop-zone:hover, .drop-zone.dragover {
+      border-color: var(--accent);
+      background: rgba(139,92,246,0.05);
+    }
+    .drop-zone input[type="file"] {
+      position: absolute; inset: 0;
+      opacity: 0; cursor: pointer; width: 100%; height: 100%;
+    }
+    .drop-icon { font-size: 48px; margin-bottom: 16px; }
+    .drop-title { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+    .drop-sub { font-size: 14px; color: var(--text-muted); }
+    .drop-formats {
+      display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    .format-tag {
+      padding: 4px 10px;
+      background: var(--surface3);
+      border-radius: 6px;
+      font-size: 12px; font-weight: 500;
+      color: var(--text-muted);
+    }
+
+    /* File preview */
+    #filePreview {
+      display: none;
+      background: var(--surface2);
+      border-radius: 14px;
+      padding: 16px 20px;
+      margin-top: 16px;
+      align-items: center;
+      gap: 14px;
+    }
+    #filePreview.visible { display: flex; }
+    .file-icon { font-size: 28px; }
+    .file-info { flex: 1; }
+    .file-name { font-size: 15px; font-weight: 600; }
+    .file-size { font-size: 13px; color: var(--text-muted); }
+    .file-remove {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 16px;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+    }
+    .file-remove:hover { background: rgba(239,68,68,0.15); color: #ef4444; border-color: #ef4444; }
+
+    /* Analyze button */
+    #analyzeBtn {
+      width: 100%;
+      padding: 18px 32px;
+      border: none; border-radius: 16px;
+      font-family: inherit; font-size: 17px; font-weight: 700;
+      cursor: pointer;
+      margin-top: 28px;
+      background: linear-gradient(135deg, #8b5cf6, #ec4899);
+      color: white;
+      transition: all 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    #analyzeBtn::before {
+      content: '';
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, rgba(255,255,255,0.15), transparent);
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    #analyzeBtn:hover::before { opacity: 1; }
+    #analyzeBtn:hover { transform: translateY(-2px); box-shadow: 0 12px 40px rgba(139,92,246,0.4); }
+    #analyzeBtn:active { transform: translateY(0); }
+    #analyzeBtn:disabled {
+      opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none;
+    }
+
+    /* Loading spinner */
+    .spinner {
+      display: inline-block;
+      width: 20px; height: 20px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-top-color: white;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Results */
+    #resultsCard {
+      display: none;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 40px;
+      margin-bottom: 24px;
+      animation: slideUp 0.5s ease;
+    }
+    #resultsCard.visible { display: block; }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .result-header { text-align: center; margin-bottom: 40px; }
+    .gender-badge {
+      display: inline-flex; align-items: center; gap: 12px;
+      padding: 16px 40px;
+      border-radius: 100px;
+      font-size: 2rem; font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 16px;
+      transition: all 0.5s ease;
+    }
+    .gender-badge.male {
+      background: linear-gradient(135deg, rgba(59,130,246,0.2), rgba(59,130,246,0.05));
+      border: 2px solid rgba(59,130,246,0.5);
+      color: var(--male-glow);
+      box-shadow: 0 0 40px rgba(59,130,246,0.2);
+    }
+    .gender-badge.female {
+      background: linear-gradient(135deg, rgba(236,72,153,0.2), rgba(236,72,153,0.05));
+      border: 2px solid rgba(236,72,153,0.5);
+      color: var(--female-glow);
+      box-shadow: 0 0 40px rgba(236,72,153,0.2);
+    }
+    .gender-emoji { font-size: 2.2rem; }
+    .confidence-bar-wrap {
+      display: flex; align-items: center; gap: 12px;
+      max-width: 320px; margin: 12px auto 0;
+    }
+    .confidence-bar {
+      flex: 1; height: 8px;
+      background: var(--surface3);
+      border-radius: 100px; overflow: hidden;
+    }
+    .confidence-fill {
+      height: 100%; border-radius: 100px;
+      transition: width 1s cubic-bezier(0.4,0,0.2,1);
+      width: 0%;
+    }
+    .confidence-fill.male { background: linear-gradient(90deg, var(--male), var(--male-glow)); }
+    .confidence-fill.female { background: linear-gradient(90deg, var(--female), var(--female-glow)); }
+    .confidence-text { font-size: 15px; font-weight: 700; white-space: nowrap; }
+
+    /* Model breakdown */
+    .models-title {
+      font-size: 13px; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+    .models-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .model-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      transition: all 0.3s ease;
+    }
+    .model-card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.15); }
+    .model-name { font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 8px; }
+    .model-result { font-size: 16px; font-weight: 700; }
+    .model-result.male { color: var(--male-glow); }
+    .model-result.female { color: var(--female-glow); }
+    .model-conf { font-size: 13px; color: var(--text-muted); }
+
+    /* Frequency stats */
+    .freq-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .freq-stat {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      text-align: center;
+    }
+    .freq-value { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+    .freq-label { font-size: 12px; color: var(--text-muted); font-weight: 500; }
+
+    /* Error */
+    #errorMsg {
+      display: none;
+      background: rgba(239,68,68,0.1);
+      border: 1px solid rgba(239,68,68,0.3);
+      border-radius: 14px;
+      padding: 16px 20px;
+      color: #fca5a5;
+      font-size: 14px;
+      margin-top: 16px;
+    }
+    #errorMsg.visible { display: block; }
+
+    /* Info cards */
+    .info-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .info-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 24px;
+    }
+    .info-icon { font-size: 28px; margin-bottom: 12px; }
+    .info-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+    .info-text { font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+
+    /* Accuracy badges */
+    .accuracy-row {
+      display: flex; gap: 10px; flex-wrap: wrap;
+      justify-content: center; margin-top: 24px;
+    }
+    .acc-badge {
+      padding: 8px 16px;
+      border-radius: 100px;
+      font-size: 13px; font-weight: 600;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .acc-badge span { color: #22c55e; }
+
+    /* Verification badge */
+    .verify-badge {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 10px 24px;
+      border-radius: 100px;
+      font-size: 15px; font-weight: 700;
+      margin-top: 16px;
+      animation: popIn 0.4s cubic-bezier(0.34,1.56,0.64,1);
+    }
+    @keyframes popIn {
+      from { transform: scale(0.7); opacity: 0; }
+      to { transform: scale(1); opacity: 1; }
+    }
+    .verify-badge.female {
+      background: linear-gradient(135deg, rgba(236,72,153,0.15), rgba(236,72,153,0.05));
+      border: 1.5px solid rgba(236,72,153,0.5);
+      color: #f472b6;
+    }
+    .verify-badge.male {
+      background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(59,130,246,0.05));
+      border: 1.5px solid rgba(59,130,246,0.4);
+      color: #60a5fa;
+    }
+
+    /* Saved + notified indicator */
+    .status-strip {
+      display: flex; gap: 10px; flex-wrap: wrap;
+      justify-content: center;
+      margin-top: 20px; margin-bottom: 32px;
+    }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 14px;
+      border-radius: 100px;
+      font-size: 12px; font-weight: 600;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .status-pill.green { border-color: rgba(34,197,94,0.4); color: #4ade80; background: rgba(34,197,94,0.08); }
+    .status-pill.blue  { border-color: rgba(59,130,246,0.4); color: #60a5fa; background: rgba(59,130,246,0.08); }
+    .status-pill.amber { border-color: rgba(245,158,11,0.4); color: #fbbf24; background: rgba(245,158,11,0.08); }
+    .status-pill .pill-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: currentColor;
+    }
+
+    @media (max-width: 600px) {
+      .card, #resultsCard { padding: 24px; }
+      .freq-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-orbs">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <div class="container">
+    <header>
+      <div class="logo-badge">
+        <span class="dot"></span>
+        AI Voice Analysis — 3 ML Models
+      </div>
+      <h1>Voice Gender Detector</h1>
+      <p class="subtitle">Record your voice or upload an audio file. Our ensemble of 3 machine learning models will predict your voice gender in seconds.</p>
+
+      <div class="accuracy-row">
+        <div class="acc-badge">SVM <span>98.9%</span></div>
+        <div class="acc-badge">Gradient Boosting <span>98.3%</span></div>
+        <div class="acc-badge">Random Forest <span>98.1%</span></div>
+      </div>
+    </header>
+
+    <div class="card">
+      <div class="mode-tabs">
+        <button class="tab-btn active" id="tabRecord" onclick="switchTab('record')">
+          🎙️ Record Voice
+        </button>
+        <button class="tab-btn" id="tabUpload" onclick="switchTab('upload')">
+          📁 Upload File
+        </button>
+      </div>
+
+      <!-- Record Section -->
+      <div id="recordSection" class="active">
+        <div class="visualizer-wrap">
+          <canvas id="waveCanvas"></canvas>
+          <div class="record-ring" id="recordRing"></div>
+        </div>
+
+        <div class="record-btn-wrap">
+          <div>
+            <div class="record-label" id="recordLabel">Click to start recording</div>
+            <div id="recordTimer"></div>
+          </div>
+          <button id="recordBtn" onclick="toggleRecord()">
+            <div class="btn-icon" id="btnIcon"></div>
+          </button>
+          <div style="min-width:120px;"></div>
+        </div>
+      </div>
+
+      <!-- Upload Section -->
+      <div id="uploadSection">
+        <div class="drop-zone" id="dropZone">
+          <input type="file" id="fileInput" accept=".wav,.mp3,.ogg,.m4a,.webm,.flac">
+          <div class="drop-icon">🎵</div>
+          <div class="drop-title">Drop your audio file here</div>
+          <div class="drop-sub">or click to browse</div>
+          <div class="drop-formats">
+            <span class="format-tag">WAV</span>
+            <span class="format-tag">MP3</span>
+            <span class="format-tag">OGG</span>
+            <span class="format-tag">M4A</span>
+            <span class="format-tag">FLAC</span>
+          </div>
+        </div>
+
+        <div id="filePreview">
+          <div class="file-icon">🎵</div>
+          <div class="file-info">
+            <div class="file-name" id="fileName"></div>
+            <div class="file-size" id="fileSize"></div>
+          </div>
+          <button class="file-remove" onclick="clearFile()">✕</button>
+        </div>
+      </div>
+
+      <div id="errorMsg"></div>
+
+      <button id="analyzeBtn" onclick="analyze()" disabled>
+        🔍 Analyze Voice Gender
+      </button>
+    </div>
+
+    <!-- Results -->
+    <div id="resultsCard">
+      <div class="result-header">
+        <div class="gender-badge" id="genderBadge">
+          <span class="gender-emoji" id="genderEmoji"></span>
+          <span id="genderLabel"></span>
+        </div>
+        <div class="confidence-bar-wrap">
+          <div class="confidence-bar">
+            <div class="confidence-fill" id="confFill"></div>
+          </div>
+          <div class="confidence-text" id="confText"></div>
+        </div>
+
+        <!-- Verification badge -->
+        <div id="verifyBadge" class="verify-badge" style="display:none;"></div>
+
+        <!-- Status strip: saved + telegram -->
+        <div class="status-strip">
+          <div class="status-pill green" id="pillSaved" style="display:none;">
+            <span class="pill-dot"></span>
+            <span id="pillSavedText">Recording Saved</span>
+          </div>
+          <div class="status-pill blue" id="pillTelegram" style="display:none;">
+            <span class="pill-dot"></span>
+            Admin Notified via Telegram
+          </div>
+          <div class="status-pill amber" id="pillTelegramOff" style="display:none;">
+            <span class="pill-dot"></span>
+            Telegram not configured
+          </div>
+        </div>
+      </div>
+
+      <div class="models-title">Model Breakdown</div>
+      <div class="models-grid">
+        <div class="model-card">
+          <div class="model-name">Support Vector Machine</div>
+          <div class="model-result" id="svmResult">—</div>
+          <div class="model-conf" id="svmConf"></div>
+        </div>
+        <div class="model-card">
+          <div class="model-name">Gradient Boosting</div>
+          <div class="model-result" id="gbmResult">—</div>
+          <div class="model-conf" id="gbmConf"></div>
+        </div>
+        <div class="model-card">
+          <div class="model-name">Random Forest</div>
+          <div class="model-result" id="rfResult">—</div>
+          <div class="model-conf" id="rfConf"></div>
+        </div>
+      </div>
+
+      <div class="models-title">Voice Frequency Analysis</div>
+      <div class="freq-grid">
+        <div class="freq-stat">
+          <div class="freq-value" id="freqMeanfun">—</div>
+          <div class="freq-label">Avg Fundamental Freq</div>
+        </div>
+        <div class="freq-stat">
+          <div class="freq-value" id="freqMeanfreq">—</div>
+          <div class="freq-label">Mean Frequency</div>
+        </div>
+        <div class="freq-stat">
+          <div class="freq-value" id="freqIQR">—</div>
+          <div class="freq-label">IQR (Variability)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Info cards -->
+    <div class="info-grid">
+      <div class="info-card">
+        <div class="info-icon">🧠</div>
+        <div class="info-title">How it works</div>
+        <div class="info-text">Your audio is analyzed for 20 acoustic features including fundamental frequency, spectral entropy, and pitch variability using librosa DSP analysis.</div>
+      </div>
+      <div class="info-card">
+        <div class="info-icon">📊</div>
+        <div class="info-title">Training Data</div>
+        <div class="info-text">Models trained on 3,168 voice samples (50% male, 50% female) achieving up to 98.9% accuracy using an ensemble voting approach.</div>
+      </div>
+      <div class="info-card">
+        <div class="info-icon">🔒</div>
+        <div class="info-title">Privacy</div>
+        <div class="info-text">Your audio is processed locally on this server. No recordings are stored or transmitted to external services.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---- State ----
+    let mode = 'record';
+    let isRecording = false;
+    let recordedBlob = null;
+    let uploadedFile = null;
+    let timerInterval = null;
+    let recordSeconds = 0;
+    let analyzerCtx = null;
+    let animFrame = null;
+
+    // AudioContext-based WAV recorder (no ffmpeg needed)
+    let audioCtxRec = null;
+    let micStream = null;
+    let scriptProcessor = null;
+    let pcmSamples = [];
+    let recSampleRate = 16000;
+
+    // ---- WAV encoder ----
+    function encodeWAV(samples, sampleRate) {
+      const numChannels = 1;
+      const bitsPerSample = 16;
+      const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+      const blockAlign = numChannels * bitsPerSample / 8;
+      const dataLen = samples.length * 2;
+      const buffer = new ArrayBuffer(44 + dataLen);
+      const view = new DataView(buffer);
+      function writeStr(offset, str) {
+        for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+      }
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + dataLen, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true);          // chunk size
+      view.setUint16(20, 1, true);           // PCM
+      view.setUint16(22, numChannels, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, byteRate, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, bitsPerSample, true);
+      writeStr(36, 'data');
+      view.setUint32(40, dataLen, true);
+      let offset = 44;
+      for (let i = 0; i < samples.length; i++) {
+        let s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 32768 : s * 32767, true);
+        offset += 2;
+      }
+      return new Blob([buffer], { type: 'audio/wav' });
+    }
+
+    // ---- Tabs ----
+    function switchTab(tab) {
+      mode = tab;
+      document.getElementById('tabRecord').classList.toggle('active', tab === 'record');
+      document.getElementById('tabUpload').classList.toggle('active', tab === 'upload');
+      document.getElementById('recordSection').classList.toggle('active', tab === 'record');
+      document.getElementById('uploadSection').classList.toggle('active', tab === 'upload');
+      checkReady();
+    }
+
+    function checkReady() {
+      const btn = document.getElementById('analyzeBtn');
+      if (mode === 'record') {
+        btn.disabled = !recordedBlob;
+      } else {
+        btn.disabled = !uploadedFile;
+      }
+    }
+
+    // ---- Recording (AudioContext + ScriptProcessor → WAV) ----
+    async function toggleRecord() {
+      if (isRecording) { stopRecording(); } else { startRecording(); }
+    }
+
+    async function startRecording() {
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 } });
+        audioCtxRec = new AudioContext({ sampleRate: 16000 });
+        recSampleRate = audioCtxRec.sampleRate;
+        pcmSamples = [];
+
+        const source = audioCtxRec.createMediaStreamSource(micStream);
+        scriptProcessor = audioCtxRec.createScriptProcessor(4096, 1, 1);
+        scriptProcessor.onaudioprocess = (e) => {
+          if (!isRecording) return;
+          const data = e.inputBuffer.getChannelData(0);
+          pcmSamples.push(new Float32Array(data));
+        };
+        source.connect(scriptProcessor);
+        scriptProcessor.connect(audioCtxRec.destination);
+
+        // Separate visualizer stream
+        setupVisualizer(micStream);
+
+        isRecording = true;
+        document.getElementById('recordBtn').classList.add('recording');
+        document.getElementById('recordRing').classList.add('visible');
+        document.getElementById('recordLabel').textContent = 'Recording... click to stop';
+        document.getElementById('recordLabel').style.color = '#ec4899';
+
+        recordSeconds = 0;
+        document.getElementById('recordTimer').textContent = '0:00';
+        timerInterval = setInterval(() => {
+          recordSeconds++;
+          const m = Math.floor(recordSeconds / 60);
+          const s = recordSeconds % 60;
+          document.getElementById('recordTimer').textContent = `${m}:${s.toString().padStart(2,'0')}`;
+          if (recordSeconds >= 30) stopRecording();
+        }, 1000);
+
+      } catch (e) {
+        showError('Microphone access denied. Please allow microphone and retry.');
+      }
+    }
+
+    function stopRecording() {
+      if (!isRecording) return;
+      isRecording = false;
+      clearInterval(timerInterval);
+
+      // Merge all PCM chunks
+      const totalLen = pcmSamples.reduce((a, c) => a + c.length, 0);
+      const merged = new Float32Array(totalLen);
+      let offset = 0;
+      for (const chunk of pcmSamples) { merged.set(chunk, offset); offset += chunk.length; }
+
+      // Encode as WAV
+      recordedBlob = encodeWAV(merged, recSampleRate);
+
+      // Cleanup
+      if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
+      if (audioCtxRec) { audioCtxRec.close(); audioCtxRec = null; }
+      if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+      stopVisualizer();
+
+      document.getElementById('recordBtn').classList.remove('recording');
+      document.getElementById('recordRing').classList.remove('visible');
+      document.getElementById('recordTimer').textContent = '';
+      document.getElementById('recordLabel').textContent = 'Recording ready! Click Analyze.';
+      document.getElementById('recordLabel').style.color = '#22c55e';
+      checkReady();
+    }
+
+    // ---- Visualizer ----
+    function setupVisualizer(stream) {
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyzer = audioCtx.createAnalyser();
+      analyzer.fftSize = 256;
+      source.connect(analyzer);
+      analyzerCtx = analyzer;
+      drawWave();
+    }
+
+    function drawWave() {
+      const canvas = document.getElementById('waveCanvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+      const W = canvas.width, H = canvas.height;
+
+      function draw() {
+        animFrame = requestAnimationFrame(draw);
+        ctx.clearRect(0, 0, W, H);
+
+        if (!analyzerCtx) {
+          // Draw flat idle line
+          ctx.strokeStyle = 'rgba(139,92,246,0.3)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(0, H / 2);
+          ctx.lineTo(W, H / 2);
+          ctx.stroke();
+          return;
+        }
+
+        const bufLen = analyzerCtx.frequencyBinCount;
+        const data = new Uint8Array(bufLen);
+        analyzerCtx.getByteTimeDomainData(data);
+
+        ctx.strokeStyle = isRecording ? '#ec4899' : '#8b5cf6';
+        ctx.lineWidth = 2.5;
+        ctx.shadowBlur = 8;
+        ctx.shadowColor = isRecording ? 'rgba(236,72,153,0.5)' : 'rgba(139,92,246,0.5)';
+        ctx.beginPath();
+
+        const sliceW = W / bufLen;
+        let x = 0;
+        for (let i = 0; i < bufLen; i++) {
+          const v = data[i] / 128.0;
+          const y = (v * H) / 2;
+          i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+          x += sliceW;
+        }
+        ctx.lineTo(W, H / 2);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+      draw();
+    }
+
+    function stopVisualizer() {
+      analyzerCtx = null;
+    }
+
+    // Start idle wave
+    drawWave();
+
+    // ---- File Upload ----
+    const fileInput = document.getElementById('fileInput');
+    const dropZone = document.getElementById('dropZone');
+
+    fileInput.addEventListener('change', e => {
+      if (e.target.files[0]) handleFile(e.target.files[0]);
+    });
+
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+    });
+
+    function handleFile(file) {
+      uploadedFile = file;
+      document.getElementById('fileName').textContent = file.name;
+      document.getElementById('fileSize').textContent = formatBytes(file.size);
+      document.getElementById('filePreview').classList.add('visible');
+      checkReady();
+      hideError();
+    }
+
+    function clearFile() {
+      uploadedFile = null;
+      fileInput.value = '';
+      document.getElementById('filePreview').classList.remove('visible');
+      checkReady();
+    }
+
+    function formatBytes(b) {
+      if (b < 1024) return b + ' B';
+      if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+      return (b/1024/1024).toFixed(1) + ' MB';
+    }
+
+    // ---- Analyze ----
+    async function analyze() {
+      hideError();
+      document.getElementById('resultsCard').classList.remove('visible');
+
+      const btn = document.getElementById('analyzeBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+
+      try {
+        const formData = new FormData();
+
+        if (mode === 'record') {
+          if (!recordedBlob) throw new Error('No recording found.');
+          formData.append('file', recordedBlob, 'recording.wav');
+        } else {
+          if (!uploadedFile) throw new Error('No file selected.');
+          formData.append('file', uploadedFile);
+        }
+
+        const res = await fetch('/predict', { method: 'POST', body: formData });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `Server error ${res.status}`);
+        }
+
+        const data = await res.json();
+        showResults(data);
+
+      } catch (e) {
+        showError(e.message);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '🔍 Analyze Voice Gender';
+        checkReady();
+      }
+    }
+
+    function showResults(data) {
+      const card = document.getElementById('resultsCard');
+      card.classList.add('visible');
+
+      const { ensemble, svm, gbm, rf, features } = data;
+      const label = ensemble.label;
+      const conf = ensemble.confidence;
+
+      // Main gender badge
+      const badge = document.getElementById('genderBadge');
+      badge.className = `gender-badge ${label}`;
+      document.getElementById('genderEmoji').textContent = label === 'male' ? '👨' : '👩';
+      document.getElementById('genderLabel').textContent = label === 'male' ? 'Male' : 'Female';
+
+      // Confidence bar
+      const fill = document.getElementById('confFill');
+      fill.className = `confidence-fill ${label}`;
+      setTimeout(() => fill.style.width = conf.toFixed(0) + '%', 100);
+      document.getElementById('confText').textContent = conf.toFixed(1) + '%';
+
+      // Verification badge
+      const vbadge = document.getElementById('verifyBadge');
+      if (label === 'female') {
+        vbadge.className = 'verify-badge female';
+        vbadge.textContent = '✅ Female Verified';
+      } else {
+        vbadge.className = 'verify-badge male';
+        vbadge.textContent = '🔵 Male Detected';
+      }
+      vbadge.style.display = 'inline-flex';
+
+      // Saved pill
+      if (data.saved_as) {
+        document.getElementById('pillSaved').style.display = 'inline-flex';
+        document.getElementById('pillSavedText').textContent =
+          `Saved: ${data.saved_as} (${data.saved_kb} KB)`;
+      }
+
+      // Telegram pill
+      if (data.telegram_configured) {
+        document.getElementById('pillTelegram').style.display = 'inline-flex';
+        document.getElementById('pillTelegramOff').style.display = 'none';
+      } else {
+        document.getElementById('pillTelegram').style.display = 'none';
+        document.getElementById('pillTelegramOff').style.display = 'inline-flex';
+      }
+
+      // Models
+      setModelCard('svm', svm);
+      setModelCard('gbm', gbm);
+      setModelCard('rf', rf);
+
+      // Frequencies
+      document.getElementById('freqMeanfun').textContent = (features.meanfun_hz || 0).toFixed(0) + ' Hz';
+      document.getElementById('freqMeanfreq').textContent = (features.meanfreq_hz || 0).toFixed(0) + ' Hz';
+      document.getElementById('freqIQR').textContent = (features.IQR || 0).toFixed(4);
+
+      card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function setModelCard(id, model) {
+      document.getElementById(`${id}Result`).textContent = model.label.charAt(0).toUpperCase() + model.label.slice(1);
+      document.getElementById(`${id}Result`).className = `model-result ${model.label}`;
+      document.getElementById(`${id}Conf`).textContent = model.confidence.toFixed(1) + '% confidence';
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('errorMsg');
+      el.textContent = '⚠️ ' + msg;
+      el.classList.add('visible');
+    }
+    function hideError() {
+      document.getElementById('errorMsg').classList.remove('visible');
+    }
+  </script>
+</body>
+</html>
