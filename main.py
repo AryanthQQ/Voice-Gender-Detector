@@ -65,7 +65,12 @@ class TelegramNotifier:
 
     def send(self, text: str) -> bool:
         """Send a message. Returns True on success."""
+        import ssl
         try:
+            # Create SSL context (bypass cert verification for Windows compat)
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
             payload = urllib.parse.urlencode({
                 'chat_id':    self.chat_id,
                 'text':       text,
@@ -73,7 +78,7 @@ class TelegramNotifier:
             }).encode()
             req = urllib.request.Request(self.base, data=payload, method='POST')
             req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
                 result = json.loads(resp.read().decode())
                 return result.get('ok', False)
         except Exception as ex:
