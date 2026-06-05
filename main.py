@@ -94,7 +94,7 @@ else:
     print("[WARN] Telegram not configured. Edit .env to add BOT_TOKEN and CHAT_ID.")
 
 
-def _build_telegram_message(result: dict, filename: str, file_size_kb: float) -> str:
+def _build_telegram_message(result: dict, filename: str, file_size_kb: float, source_url: str = None) -> str:
     """Build a rich Telegram HTML notification message."""
     ens    = result['ensemble']
     svm    = result['svm']
@@ -118,12 +118,19 @@ def _build_telegram_message(result: dict, filename: str, file_size_kb: float) ->
     female_votes = 3 - votes
     vote_summary = f"{female_votes}/3 Female" if label == 'female' else f"{votes}/3 Male"
 
+    # Audio link line — only shown when source URL is available
+    audio_link_line = ""
+    if source_url:
+        audio_link_line = f"🔗 <b>Recording:</b> <a href=\"{source_url}\">▶️ Sunne ke liye click karo</a>\n"
+
     msg = (
         f"🎙️ <b>Voice Gender Verification Alert</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📅 <b>Time:</b> {now}\n"
         f"🔊 <b>File:</b> <code>{filename}</code>\n"
-        f"📁 <b>Size:</b> {file_size_kb:.1f} KB\n\n"
+        f"📁 <b>Size:</b> {file_size_kb:.1f} KB\n"
+        f"{audio_link_line}"
+        f"\n"
         f"{verdict_icon} {status_emoji} {verdict_line}\n"
         f"<b>Confidence:</b> {conf:.1f}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -149,7 +156,9 @@ def _notify_async(result: dict, filename: str, file_size_kb: float):
     label = result['ensemble']['label']
     if config.NOTIFY_ON == 'female' and label != 'female':
         return  # Only notify for female if configured
-    msg = _build_telegram_message(result, filename, file_size_kb)
+    # Extract source URL if available (from /predict-url flow)
+    source_url = result.get('source_url') or None
+    msg = _build_telegram_message(result, filename, file_size_kb, source_url=source_url)
     ok  = _notifier.send(msg)
     print(f"[TELEGRAM] Notification {'sent' if ok else 'FAILED'} for {filename} ({label})")
 
@@ -439,32 +448,47 @@ async def predict_from_url(request: Request):
     if ext not in {'.wav', '.mp3', '.ogg', '.m4a', '.flac', '.webm'}:
         ext = '.wav'
 
-    # ── 3. Save to recordings folder ──────────────────────────────────────────
-    timestamp  = datetime.now().strftime('%Y%m%d_%H%M%S')
-    saved_name = f"advisor_{advisor_id}_{timestamp}{ext}"
-    saved_path = os.path.join(RECORDINGS_DIR, saved_name)
-
-    with open(saved_path, 'wb') as f:
-        f.write(content)
-    print(f"[URL] Downloaded {file_size_kb:.1f} KB → {saved_name}")
-
-    # ── 4. Extract features + predict ─────────────────────────────────────────
+    # ── 3. Use temp file — no permanent local storage (original is on FriendshipHub) ──
+    tmp_path = None
     try:
-        features = extract_features(saved_path)
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+        print(f"[URL] Downloaded {file_size_kb:.1f} KB -> temp file (no local save)")
+
+        # ── 4. Extract features + predict ─────────────────────────────────────
+        features = extract_features(tmp_path)
         result   = predict_gender(features)
 
         is_female = result['ensemble']['label'] == 'female'
+        display_name = f"{advisor_name} (ID:{advisor_id})"
 
+        # ── 5. REJECT male voice — no Telegram, no further action ─────────────
+        if not is_female:
+            print(f"[REJECT] Male voice detected for {display_name} — rejected, no Telegram sent.")
+            return JSONResponse(content={
+                'accepted':     False,
+                'is_female':    False,
+                'reason':       'Male voice detected. Only female voices are accepted.',
+                'ensemble':     result['ensemble'],
+                'svm':          result['svm'],
+                'gbm':          result['gbm'],
+                'rf':           result['rf'],
+                'advisor_id':   advisor_id,
+                'advisor_name': advisor_name,
+                'saved_kb':     round(file_size_kb, 1),
+            })
+
+        # ── 6. Female voice — enrich result + send Telegram ───────────────────
+        result['accepted']             = True
         result['advisor_id']           = advisor_id
         result['advisor_name']         = advisor_name
-        result['source_url']           = audio_url
-        result['saved_as']             = saved_name
+        result['source_url']           = audio_url      # original FriendshipHub URL
         result['saved_kb']             = round(file_size_kb, 1)
-        result['is_female']            = is_female
+        result['is_female']            = True
         result['telegram_configured']  = config.telegram_configured()
 
-        # ── 5. Telegram notification (background) ──────────────────────────────
-        display_name = f"{advisor_name} (ID:{advisor_id})"
+        # ── 7. Telegram notification (background) ─────────────────────────────
         t = threading.Thread(
             target=_notify_async,
             args=(result, display_name, file_size_kb),
@@ -475,12 +499,16 @@ async def predict_from_url(request: Request):
         return JSONResponse(content=result)
 
     except Exception as e:
-        err_path = saved_path.replace(ext, f'_FAILED{ext}')
-        try:
-            os.rename(saved_path, err_path)
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail=f"Audio processing error: {str(e)}")
+
+    finally:
+        # Always clean up temp file
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+                print(f"[URL] Temp file cleaned up: {tmp_path}")
+            except Exception:
+                pass
 
 
 # Mount static files
