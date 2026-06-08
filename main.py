@@ -291,15 +291,15 @@ def predict_gender(features: dict) -> dict:
     rf_prob  = rf_model.predict_proba(feat_scaled)[0]
     rf_pred  = int(np.argmax(rf_prob))
 
-    votes      = [svm_pred, gbm_pred, rf_pred]
-    male_votes = sum(votes)
+    models = [
+        ('male' if svm_pred == 1 else 'female', float(max(svm_prob))),
+        ('male' if gbm_pred == 1 else 'female', float(max(gbm_prob))),
+        ('male' if rf_pred  == 1 else 'female', float(max(rf_prob)))
+    ]
+    best_model = max(models, key=lambda x: x[1])
     
-    # Majority vote: 2 out of 3 models must agree
-    final_label = 'male' if male_votes >= 2 else 'female'
-
-    male_avg_conf   = (svm_prob[1] + gbm_prob[1] + rf_prob[1]) / 3.0
-    female_avg_conf = 1.0 - male_avg_conf
-    final_conf = male_avg_conf if final_label == 'male' else female_avg_conf
+    final_label = best_model[0]
+    final_conf = best_model[1]
 
     # ── PITCH (FREQUENCY) HARD FILTER & MANUAL REVIEW ───────────────────
     meanfun_hz = features['meanfun'] * 1000
