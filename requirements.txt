@@ -6,3 +6,5 @@ scikit-learn>=1.4.2
 joblib>=1.4.2
 librosa>=0.10.2
 soundfile>=0.12.1
+imageio-ffmpeg>=0.4.9
+pandas>=2.0.0
