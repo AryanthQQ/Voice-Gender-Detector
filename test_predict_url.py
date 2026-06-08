@@ -12,7 +12,7 @@ body = json.dumps({
 }).encode()
 
 req = urllib.request.Request(
-    "http://localhost:8000/predict-url",
+    "http://localhost:8080/predict-url",
     data=body,
     method="POST",
     headers={"Content-Type": "application/json"}
