@@ -196,6 +196,20 @@ def extract_features(audio_path: str) -> dict:
         print(f"[WARN] soundfile load failed ({load_err}), trying librosa fallback...")
         y, sr = librosa.load(audio_path, sr=16000, mono=True)
 
+    # ── AUDIO FILTERING (IMPROVES ACCURACY) ──────────────────────────────────
+    # 1. Volume Normalization (Aawaaz ka level barabar karna)
+    y = librosa.util.normalize(y)
+    
+    # 2. Silence Trimming (Shuru aur aakhir ka blank noise/shanti hatana)
+    y, _ = librosa.effects.trim(y, top_db=30)
+
+    # 3. Bandpass Filter (50Hz - 3000Hz) - Safe Noise Reduction
+    import scipy.signal
+    nyq = 0.5 * sr
+    b, a = scipy.signal.butter(3, [50.0 / nyq, 3000.0 / nyq], btype='band')
+    y = scipy.signal.filtfilt(b, a, y)
+    # ─────────────────────────────────────────────────────────────────────────
+
     fmin, fmax = 50, 280
 
     stft = np.abs(librosa.stft(y))
@@ -395,7 +409,13 @@ async def predict(file: UploadFile = File(...)):
             os.rename(saved_path, err_path)
         except Exception:
             pass
-        raise HTTPException(status_code=500, detail=f"Audio processing error: {str(e)}")
+        print(f"[REJECT] Audio processing error for uploaded file: {e}")
+        return JSONResponse(content={
+            'accepted': False,
+            'is_female': False,
+            'reason': f'Audio processing error: {str(e)}',
+            'saved_as': os.path.basename(err_path)
+        })
 
 
 @app.get("/health")
@@ -531,7 +551,14 @@ async def predict_from_url(request: Request):
         return JSONResponse(content=result)
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Audio processing error: {str(e)}")
+        print(f"[REJECT] Audio processing error for {advisor_name} (ID: {advisor_id}): {e}")
+        return JSONResponse(content={
+            'accepted': False,
+            'is_female': False,
+            'reason': f'Audio processing error: {str(e)}',
+            'advisor_id': advisor_id,
+            'advisor_name': advisor_name,
+        })
 
     finally:
         # Always clean up temp file
