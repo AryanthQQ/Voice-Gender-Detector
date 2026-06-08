@@ -349,6 +349,12 @@
       color: var(--female-glow);
       box-shadow: 0 0 40px rgba(236,72,153,0.2);
     }
+    .gender-badge.manual_review {
+      background: linear-gradient(135deg, rgba(245,158,11,0.2), rgba(245,158,11,0.05));
+      border: 2px solid rgba(245,158,11,0.5);
+      color: #fcd34d;
+      box-shadow: 0 0 40px rgba(245,158,11,0.2);
+    }
     .gender-emoji { font-size: 2.2rem; }
     .confidence-bar-wrap {
       display: flex; align-items: center; gap: 12px;
@@ -366,6 +372,7 @@
     }
     .confidence-fill.male { background: linear-gradient(90deg, var(--male), var(--male-glow)); }
     .confidence-fill.female { background: linear-gradient(90deg, var(--female), var(--female-glow)); }
+    .confidence-fill.manual_review { background: linear-gradient(90deg, #f59e0b, #fcd34d); }
     .confidence-text { font-size: 15px; font-weight: 700; white-space: nowrap; }
 
     /* Model breakdown */
@@ -477,6 +484,11 @@
       background: linear-gradient(135deg, rgba(59,130,246,0.15), rgba(59,130,246,0.05));
       border: 1.5px solid rgba(59,130,246,0.4);
       color: #60a5fa;
+    }
+    .verify-badge.manual_review {
+      background: linear-gradient(135deg, rgba(245,158,11,0.15), rgba(245,158,11,0.05));
+      border: 1.5px solid rgba(245,158,11,0.4);
+      color: #fbbf24;
     }
 
     /* Saved + notified indicator */
@@ -1015,8 +1027,8 @@
       // Main gender badge
       const badge = document.getElementById('genderBadge');
       badge.className = `gender-badge ${label}`;
-      document.getElementById('genderEmoji').textContent = label === 'male' ? '👨' : '👩';
-      document.getElementById('genderLabel').textContent = label === 'male' ? 'Male' : 'Female';
+      document.getElementById('genderEmoji').textContent = label === 'male' ? '👨' : label === 'female' ? '👩' : '🧐';
+      document.getElementById('genderLabel').textContent = label === 'male' ? 'Male' : label === 'female' ? 'Female' : 'Review';
 
       // Confidence bar
       const fill = document.getElementById('confFill');
@@ -1029,6 +1041,9 @@
       if (label === 'female') {
         vbadge.className = 'verify-badge female';
         vbadge.textContent = '✅ Female Verified';
+      } else if (label === 'manual_review') {
+        vbadge.className = 'verify-badge manual_review';
+        vbadge.textContent = '⚠️ Manual Review Required';
       } else {
         vbadge.className = 'verify-badge male';
         vbadge.textContent = '🔵 Male Detected';

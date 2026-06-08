@@ -6,6 +6,7 @@ Voice Gender Detection - FastAPI Backend
 - Auto-saves every recording to recordings/ folder
 - Sends Telegram notification to admin with verification result
 """
+import imageio_ffmpeg
 import os
 import shutil
 import tempfile
@@ -14,6 +15,9 @@ import urllib.request
 import urllib.parse
 import json
 from datetime import datetime
+
+# Ensure ffmpeg is available for audioread
+os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
 
 import numpy as np
 import joblib
@@ -110,18 +114,27 @@ def _build_telegram_message(result: dict, filename: str, file_size_kb: float, so
         verdict_line = "VERDICT: <b>FEMALE VERIFIED</b>"
         verdict_icon = "✅"
         status_emoji = "👩"
+    elif label == 'manual_review':
+        verdict_line = "VERDICT: <b>MANUAL REVIEW NEEDED</b>"
+        verdict_icon = "⚠️"
+        status_emoji = "🧐"
     else:
         verdict_line = "VERDICT: <b>MALE DETECTED</b>"
         verdict_icon = "🔵"
         status_emoji = "👨"
 
     female_votes = 3 - votes
-    vote_summary = f"{female_votes}/3 Female" if label == 'female' else f"{votes}/3 Male"
+    if label == 'female':
+        vote_summary = f"{female_votes}/3 Female"
+    elif label == 'male':
+        vote_summary = f"{votes}/3 Male"
+    else:
+        vote_summary = f"{female_votes}/3 Female (Ambiguous)"
 
     # Audio link line — only shown when source URL is available
     audio_link_line = ""
     if source_url:
-        audio_link_line = f"🔗 <b>Recording:</b> <a href=\"{source_url}\">▶️ Sunne ke liye click karo</a>\n"
+        audio_link_line = f"🔗 <b>Recording:</b> <a href=\"{source_url}\">▶️ Listen and Verify</a>\n"
 
     msg = (
         f"🎙️ <b>Voice Gender Verification Alert</b>\n"
@@ -154,8 +167,10 @@ def _notify_async(result: dict, filename: str, file_size_kb: float):
     if _notifier is None:
         return
     label = result['ensemble']['label']
-    if config.NOTIFY_ON == 'female' and label != 'female':
-        return  # Only notify for female if configured
+    if label == 'male':
+        return  # Do not send notifications for male voices
+    if config.NOTIFY_ON == 'female' and label not in ('female', 'manual_review'):
+        return  # Only notify for female or manual review if configured
     # Extract source URL if available (from /predict-url flow)
     source_url = result.get('source_url') or None
     msg = _build_telegram_message(result, filename, file_size_kb, source_url=source_url)
@@ -278,11 +293,26 @@ def predict_gender(features: dict) -> dict:
 
     votes      = [svm_pred, gbm_pred, rf_pred]
     male_votes = sum(votes)
+    
+    # Majority vote: 2 out of 3 models must agree
     final_label = 'male' if male_votes >= 2 else 'female'
 
     male_avg_conf   = (svm_prob[1] + gbm_prob[1] + rf_prob[1]) / 3.0
     female_avg_conf = 1.0 - male_avg_conf
     final_conf = male_avg_conf if final_label == 'male' else female_avg_conf
+
+    # ── PITCH (FREQUENCY) HARD FILTER & MANUAL REVIEW ───────────────────
+    meanfun_hz = features['meanfun'] * 1000
+    if final_label == 'female':
+        if meanfun_hz < 155.0:
+            # Definitely Male range
+            final_label = 'male'
+            final_conf = 0.999
+            print(f"[PITCH FILTER] Override applied. Pitch was {meanfun_hz:.1f} Hz (Male range).")
+        elif meanfun_hz < 175.0 or (final_conf * 100) < 80.0:
+            # Ambiguous pitch or low confidence -> send to manager
+            final_label = 'manual_review'
+            print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
 
     return {
         'svm': {'label': 'male' if svm_pred == 1 else 'female', 'confidence': float(max(svm_prob)) * 100},

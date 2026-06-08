@@ -13,10 +13,17 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.pipeline import Pipeline
 
+import argparse
+
+# Parse arguments for custom data
+parser = argparse.ArgumentParser(description="Train Voice Gender ML model")
+parser.add_argument("--data", default="voice.csv", help="Path to the dataset CSV file")
+args = parser.parse_args()
+
 # Load dataset
-print("Loading voice.csv dataset...")
+print(f"Loading {args.data} dataset...")
 rows = []
-with open('voice.csv', 'r') as f:
+with open(args.data, 'r', encoding='utf-8') as f:
     reader = csv.DictReader(f)
     for row in reader:
         rows.append(row)
