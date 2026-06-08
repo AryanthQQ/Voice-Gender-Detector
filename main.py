@@ -314,6 +314,8 @@ def predict_gender(features: dict) -> dict:
             final_label = 'manual_review'
             print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
 
+    male_votes = sum([svm_pred, gbm_pred, rf_pred])
+
     return {
         'svm': {'label': 'male' if svm_pred == 1 else 'female', 'confidence': float(max(svm_prob)) * 100},
         'gbm': {'label': 'male' if gbm_pred == 1 else 'female', 'confidence': float(max(gbm_prob)) * 100},
