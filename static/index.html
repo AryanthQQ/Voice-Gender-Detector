@@ -600,6 +600,16 @@
 
       <div id="errorMsg"></div>
 
+      <div style="margin-bottom: 20px; text-align: left;">
+        <label for="modelSelect" style="color: rgba(255,255,255,0.7); font-size: 0.9rem; margin-bottom: 6px; display: block;">Active AI Model:</label>
+        <select id="modelSelect" onchange="if(lastData) showResults(lastData)" style="width: 100%; padding: 12px; background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; outline: none; font-size: 1rem; cursor: pointer;">
+          <option value="ensemble" style="background: #0f172a;">Ensemble (3 Models combined) - Recommended</option>
+          <option value="svm" style="background: #0f172a;">Support Vector Machine (SVM)</option>
+          <option value="gbm" style="background: #0f172a;">Gradient Boosting (GBM)</option>
+          <option value="rf" style="background: #0f172a;">Random Forest (RF)</option>
+        </select>
+      </div>
+
       <button id="analyzeBtn" onclick="analyze()" disabled>
         🔍 Analyze Voice Gender
       </button>
@@ -697,19 +707,9 @@
 
   <script>
     // ---- State ----
-    let mode = 'record';
+    let mode = 'upload'; // 'record' or 'upload'
     let isRecording = false;
-    let recordedBlob = null;
-    let uploadedFile = null;
-    let timerInterval = null;
-    let recordSeconds = 0;
-    let analyzerCtx = null;
-    let animFrame = null;
-
-    // AudioContext-based WAV recorder (no ffmpeg needed)
-    let audioCtxRec = null;
-    let micStream = null;
-    let scriptProcessor = null;
+    let micStream, audioCtxRec, scriptProcessor, analyzerCtx, animFrame;
     let pcmSamples = [];
     let recSampleRate = 16000;
 
@@ -1005,6 +1005,21 @@
         }
 
         const data = await res.json();
+        lastData = data;
+        
+        // Auto-select the model with the highest confidence score
+        let bestModel = 'ensemble';
+        let maxConf = data.ensemble.confidence;
+        
+        const subModels = ['svm', 'gbm', 'rf'];
+        for (const m of subModels) {
+          if (data[m].confidence > maxConf) {
+            maxConf = data[m].confidence;
+            bestModel = m;
+          }
+        }
+        document.getElementById('modelSelect').value = bestModel;
+
         showResults(data);
 
       } catch (e) {
@@ -1021,8 +1036,11 @@
       card.classList.add('visible');
 
       const { ensemble, svm, gbm, rf, features } = data;
-      const label = ensemble.label;
-      const conf = ensemble.confidence;
+      
+      const selectedModel = document.getElementById('modelSelect').value;
+      const activeModelData = data[selectedModel];
+      const label = activeModelData.label;
+      const conf = activeModelData.confidence;
 
       // Main gender badge
       const badge = document.getElementById('genderBadge');
