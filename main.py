@@ -548,16 +548,17 @@ async def predict_from_url(request: Request):
         result   = predict_gender(features)
         result['ai'] = ai_result
 
-        is_female = result['ensemble']['label'] == 'female'
+        label = result['ensemble']['label']
         display_name = f"{advisor_name} (ID:{advisor_id})"
 
         # ── 5. REJECT male voice — no Telegram, no further action ─────────────
-        if not is_female:
+        if label == 'male':
             print(f"[REJECT] Male voice detected for {display_name} — rejected, no Telegram sent.")
             return JSONResponse(content={
                 'accepted':     False,
                 'is_female':    False,
                 'is_ai':        False,
+                'status':       'rejected_male',
                 'reason':       'Male voice detected. Only female voices are accepted.',
                 'ensemble':     result['ensemble'],
                 'svm':          result['svm'],
@@ -568,8 +569,9 @@ async def predict_from_url(request: Request):
                 'saved_kb':     round(file_size_kb, 1),
             })
 
-        # ── 6. Female voice — enrich result + send Telegram ───────────────────
-        result['accepted']             = True
+        # ── 6. Female or Manual Review — enrich result + send Telegram ───────────────────
+        result['accepted']             = (label == 'female')
+        result['status']               = label # 'female' or 'manual_review'
         result['advisor_id']           = advisor_id
         result['advisor_name']         = advisor_name
         result['source_url']           = audio_url      # original FriendshipHub URL
