@@ -1,6 +1,7 @@
 import os
 import torch
 import librosa
+import numpy as np
 from transformers import pipeline
 
 # We will use a pre-trained model for deepfake audio detection.
@@ -27,13 +28,43 @@ def get_detector():
             _detector = False # Mark as failed so we don't keep trying
     return _detector
 
+def detect_replay_attack(y, sr) -> dict:
+    """
+    Heuristic detection for Replay Attack (audio played from a speaker).
+    Calculates the ratio of high frequency (4-8kHz) energy to low frequency (0-4kHz) energy.
+    """
+    try:
+        S = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=128, fmax=8000)
+        freqs = librosa.mel_frequencies(n_mels=128, fmin=0, fmax=8000)
+        
+        low_band = (freqs >= 0) & (freqs < 4000)
+        high_band = (freqs >= 4000) & (freqs <= 8000)
+        
+        low_energy = np.mean(S[low_band, :])
+        high_energy = np.mean(S[high_band, :])
+        
+        if low_energy < 1e-10:
+            return {"is_replay": False, "ratio": 0.0}
+            
+        ratio = high_energy / low_energy
+        
+        # Strict threshold: if high-frequency energy is less than 1% of low-freq, 
+        # it's likely a speaker playback.
+        is_replay = ratio < 0.01 
+        
+        return {"is_replay": is_replay, "ratio": ratio}
+    except Exception as e:
+        print(f"[ERROR] Replay detection failed: {e}")
+        return {"is_replay": False, "ratio": 0.0}
+
 def predict_is_ai(audio_path: str) -> dict:
     """
-    Predicts whether the given audio file is AI-generated or real human voice.
+    Predicts whether the given audio file is AI-generated, Replay Attack, or real human voice.
     Returns:
         dict: {
             "is_ai": bool,
             "confidence": float,
+            "reason": str,
             "status": str
         }
     """
@@ -42,6 +73,7 @@ def predict_is_ai(audio_path: str) -> dict:
         return {
             "is_ai": False, 
             "confidence": 0.0, 
+            "reason": "",
             "status": "model_error"
         }
 
@@ -79,10 +111,24 @@ def predict_is_ai(audio_path: str) -> dict:
         elif top_pred['label'].lower() in ['real', 'bonafide', 'human']:
             is_ai = False
             ai_conf = top_pred['score']
+
+        # --- REPLAY ATTACK CHECK ---
+        replay_result = detect_replay_attack(y, sr)
         
+        reason = ""
+        if is_ai:
+            reason = f"AI/Synthetic voice detected ({round(ai_conf * 100, 1)}%)"
+        elif replay_result["is_replay"]:
+            # Generic rejection message for replay attack to hide defense mechanism
+            is_ai = True  # Flag as invalid/spoof
+            ai_conf = 0.99
+            reason = "Invalid audio quality (Playback/Replay detected)"
+            print(f"[REPLAY] Replay attack detected! HF ratio: {replay_result['ratio']:.5f}")
+
         return {
             "is_ai": is_ai,
             "confidence": round(float(ai_conf) * 100, 2),
+            "reason": reason,
             "status": "success"
         }
         
@@ -91,5 +137,6 @@ def predict_is_ai(audio_path: str) -> dict:
         return {
             "is_ai": False,
             "confidence": 0.0,
+            "reason": "",
             "status": "processing_error"
         }

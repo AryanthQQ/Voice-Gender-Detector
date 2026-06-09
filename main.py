@@ -149,7 +149,7 @@ def _build_telegram_message(result: dict, filename: str, file_size_kb: float, so
         f"<b>Confidence:</b> {conf:.1f}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Model Breakdown:</b>\n"
-        f"  • AI Check:       {'🔴 AI/Deepfake' if result.get('ai', {}).get('is_ai') else '✅ Real Human'}\n"
+        f"  • AI Check:       {'🔴 Replay Attack' if 'Replay' in result.get('ai', {}).get('reason', '') else '🔴 AI/Deepfake' if result.get('ai', {}).get('is_ai') else '✅ Real Human'}\n"
         f"  • SVM:            {svm['label'].title()} ({svm['confidence']:.0f}%)\n"
         f"  • Gradient Boost: {gbm['label'].title()} ({gbm['confidence']:.0f}%)\n"
         f"  • Random Forest:  {rf['label'].title()} ({rf['confidence']:.0f}%)\n"
@@ -389,7 +389,8 @@ async def predict(file: UploadFile = File(...)):
         # Check if AI or Human first
         ai_result = predict_is_ai(saved_path)
         if ai_result.get('is_ai'):
-            print(f"[REJECT] AI Voice detected. Confidence: {ai_result.get('confidence')}%")
+            reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
+            print(f"[REJECT] Spoof/AI Voice detected. Reason: {reason_str}")
             # Keep failed recording but mark it
             err_path = saved_path.replace(ext, f'_AI_FAKE{ext}')
             try: os.rename(saved_path, err_path)
@@ -399,7 +400,7 @@ async def predict(file: UploadFile = File(...)):
                 'is_female': False,
                 'is_ai': True,
                 'ai_confidence': ai_result.get('confidence'),
-                'reason': f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)",
+                'reason': reason_str,
                 'saved_as': os.path.basename(err_path)
             })
 
@@ -531,13 +532,14 @@ async def predict_from_url(request: Request):
         # ── 4. Extract features + predict ─────────────────────────────────────
         ai_result = predict_is_ai(tmp_path)
         if ai_result.get('is_ai'):
-            print(f"[REJECT] AI Voice detected for {advisor_name}. Confidence: {ai_result.get('confidence')}%")
+            reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
+            print(f"[REJECT] Spoof/AI Voice detected for {advisor_name}. Reason: {reason_str}")
             return JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': True,
                 'ai_confidence': ai_result.get('confidence'),
-                'reason': f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)",
+                'reason': reason_str,
                 'advisor_id': advisor_id,
                 'advisor_name': advisor_name,
             })
