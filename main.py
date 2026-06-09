@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
 import config
+from deepfake_detector import predict_is_ai
 
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Voice Gender Detection API", version="2.0.0")
@@ -148,6 +149,7 @@ def _build_telegram_message(result: dict, filename: str, file_size_kb: float, so
         f"<b>Confidence:</b> {conf:.1f}%\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"<b>Model Breakdown:</b>\n"
+        f"  • AI Check:       {'🔴 AI/Deepfake' if result.get('ai', {}).get('is_ai') else '✅ Real Human'}\n"
         f"  • SVM:            {svm['label'].title()} ({svm['confidence']:.0f}%)\n"
         f"  • Gradient Boost: {gbm['label'].title()} ({gbm['confidence']:.0f}%)\n"
         f"  • Random Forest:  {rf['label'].title()} ({rf['confidence']:.0f}%)\n"
@@ -384,8 +386,26 @@ async def predict(file: UploadFile = File(...)):
 
     # ── 4. Extract features + predict (use saved file directly) ──────────────
     try:
+        # Check if AI or Human first
+        ai_result = predict_is_ai(saved_path)
+        if ai_result.get('is_ai'):
+            print(f"[REJECT] AI Voice detected. Confidence: {ai_result.get('confidence')}%")
+            # Keep failed recording but mark it
+            err_path = saved_path.replace(ext, f'_AI_FAKE{ext}')
+            try: os.rename(saved_path, err_path)
+            except: pass
+            return JSONResponse(content={
+                'accepted': False,
+                'is_female': False,
+                'is_ai': True,
+                'ai_confidence': ai_result.get('confidence'),
+                'reason': f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)",
+                'saved_as': os.path.basename(err_path)
+            })
+
         features = extract_features(saved_path)
         result   = predict_gender(features)
+        result['ai'] = ai_result
 
         # Add saved filename to result for frontend display
         result['saved_as'] = saved_name
@@ -509,8 +529,22 @@ async def predict_from_url(request: Request):
         print(f"[URL] Downloaded {file_size_kb:.1f} KB -> temp file (no local save)")
 
         # ── 4. Extract features + predict ─────────────────────────────────────
+        ai_result = predict_is_ai(tmp_path)
+        if ai_result.get('is_ai'):
+            print(f"[REJECT] AI Voice detected for {advisor_name}. Confidence: {ai_result.get('confidence')}%")
+            return JSONResponse(content={
+                'accepted': False,
+                'is_female': False,
+                'is_ai': True,
+                'ai_confidence': ai_result.get('confidence'),
+                'reason': f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)",
+                'advisor_id': advisor_id,
+                'advisor_name': advisor_name,
+            })
+
         features = extract_features(tmp_path)
         result   = predict_gender(features)
+        result['ai'] = ai_result
 
         is_female = result['ensemble']['label'] == 'female'
         display_name = f"{advisor_name} (ID:{advisor_id})"
@@ -521,6 +555,7 @@ async def predict_from_url(request: Request):
             return JSONResponse(content={
                 'accepted':     False,
                 'is_female':    False,
+                'is_ai':        False,
                 'reason':       'Male voice detected. Only female voices are accepted.',
                 'ensemble':     result['ensemble'],
                 'svm':          result['svm'],
