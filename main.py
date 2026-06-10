@@ -277,7 +277,7 @@ def extract_features(audio_path: str) -> dict:
         maxdom  = np.max(dom_arr)
         dfrange = maxdom - mindom
         diffs   = np.abs(np.diff(dom_arr))
-        modindx = (np.sum(diffs) / (dfrange + 1e-10)) if len(diffs) > 0 else 0.0
+        modindx = (np.sum(diffs) / dfrange) if dfrange > 0 and len(diffs) > 0 else 0.0
     else:
         meandom = mindom = maxdom = dfrange = modindx = 0.0
 
@@ -516,6 +516,19 @@ async def predict_from_url(request: Request):
 
     file_size_kb = len(content) / 1024
 
+    if file_size_kb < 4.0:
+        print(f"[REJECT] Audio file is too small ({file_size_kb:.1f} KB) for {advisor_name}.")
+        return JSONResponse(content={
+            'accepted': False,
+            'is_female': False,
+            'is_ai': False,
+            'status': 'rejected_error',
+            'reason': f"Audio file is too small ({file_size_kb:.1f} KB). Minimum 4KB required.",
+            'advisor_id': advisor_id,
+            'advisor_name': advisor_name,
+            'saved_kb': round(file_size_kb, 1),
+        })
+
     # ── 2. Determine extension ────────────────────────────────────────────────
     clean_url = audio_url.split("?")[0].lower()   # Remove query params (S3 signed URLs)
     ext = os.path.splitext(clean_url)[1]
@@ -595,9 +608,12 @@ async def predict_from_url(request: Request):
         return JSONResponse(content={
             'accepted': False,
             'is_female': False,
+            'is_ai': False,
+            'status': 'rejected_error',
             'reason': f'Audio processing error: {str(e)}',
             'advisor_id': advisor_id,
             'advisor_name': advisor_name,
+            'saved_kb': round(file_size_kb, 1) if 'file_size_kb' in locals() else 0.0,
         })
 
     finally:
