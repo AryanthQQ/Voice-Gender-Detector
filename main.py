@@ -494,8 +494,8 @@ async def predict_from_url(request: Request):
 
     body = await request.json()
     audio_url    = body.get("url", "").strip()
-    advisor_id   = str(body.get("advisor_id", "unknown"))
-    advisor_name = str(body.get("advisor_name", "Unknown"))
+    advisor_id   = str(body.get("userId", "unknown"))
+    advisor_name = str(body.get("fullname", "Unknown"))
 
     if not audio_url:
         raise HTTPException(status_code=400, detail="Missing 'url' field in request body.")
