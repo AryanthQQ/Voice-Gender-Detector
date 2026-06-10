@@ -307,37 +307,29 @@ def predict_gender(features: dict) -> dict:
     rf_prob  = rf_model.predict_proba(feat_scaled)[0]
     rf_pred  = int(np.argmax(rf_prob))
 
-    # Calculate average probabilities to increase stability and female accuracy
-    avg_female_prob = (svm_prob[0] + gbm_prob[0] + rf_prob[0]) / 3.0
-    avg_male_prob   = (svm_prob[1] + gbm_prob[1] + rf_prob[1]) / 3.0
-
-    # Bias slightly towards female (threshold 0.45) since we have strict pitch filters
-    if avg_female_prob >= 0.45:
-        final_label = 'female'
-        final_conf = avg_female_prob
-    else:
-        final_label = 'male'
-        final_conf = avg_male_prob
+    models = [
+        ('male' if svm_pred == 1 else 'female', float(max(svm_prob))),
+        ('male' if gbm_pred == 1 else 'female', float(max(gbm_prob))),
+        ('male' if rf_pred  == 1 else 'female', float(max(rf_prob)))
+    ]
+    best_model = max(models, key=lambda x: x[1])
+    
+    final_label = best_model[0]
+    final_conf = best_model[1]
 
     # ── PITCH (FREQUENCY) HARD FILTER & MANUAL REVIEW ───────────────────
     meanfun_hz = features['meanfun'] * 1000
     meanfreq_hz = features['meanfreq'] * 1000
-
     if final_label == 'female':
-        if meanfun_hz < 150.0 or meanfreq_hz < 145.0:
+        if meanfun_hz < 155.0 or meanfreq_hz < 150.0:
             # Definitely Male range
             final_label = 'male'
             final_conf = 0.999
             print(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
-        elif meanfun_hz < 170.0 or meanfreq_hz < 165.0 or (final_conf * 100) < 75.0:
+        elif meanfun_hz < 175.0 or meanfreq_hz < 170.0 or (final_conf * 100) < 80.0:
             # Ambiguous pitch, frequency or low confidence -> send to manager
             final_label = 'manual_review'
-            print(f"[MANUAL REVIEW] Ambiguous female voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
-    elif final_label == 'male':
-        if meanfun_hz > 180.0 and meanfreq_hz > 175.0:
-            # Model predicts male, but pitch is very high (potential false rejection of a female)
-            final_label = 'manual_review'
-            print(f"[MANUAL REVIEW] High-pitch male prediction (possible female). Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz.")
+            print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
 
 
     male_votes = sum([svm_pred, gbm_pred, rf_pred])
