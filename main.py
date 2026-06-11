@@ -617,8 +617,8 @@ async def predict_from_url(request: Request):
             return JSONResponse(content=res)
 
         # ── 6. Female or Manual Review — enrich result + send Telegram ───────────────────
-        result['accepted']             = (label == 'female')
-        result['status']               = label # 'female' or 'manual_review'
+        result['status']               = 'manual_review' if gender_mismatch else label
+        result['accepted']             = (result['status'] == 'female')
         result['advisor_id']           = advisor_id
         result['advisor_name']         = advisor_name
         result['name_gender']          = name_gender
