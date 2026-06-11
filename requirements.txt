@@ -11,3 +11,4 @@ pandas>=2.0.0
 transformers
 torch
 torchaudio
+gender-guesser>=0.4.0

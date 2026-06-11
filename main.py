@@ -29,9 +29,13 @@ from fastapi.responses import FileResponse, JSONResponse
 
 import config
 from deepfake_detector import predict_is_ai
+import gender_guesser.detector as gender
 
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Voice Gender Detection API", version="2.0.0")
+
+# Initialize name gender detector
+gender_detector = gender.Detector()
 
 app.add_middleware(
     CORSMiddleware,
@@ -578,6 +582,16 @@ async def predict_from_url(request: Request):
         label = result['ensemble']['label']
         display_name = f"{advisor_name} (ID:{advisor_id})"
 
+        # ── 4b. Name Gender Detection ─────────────────────────────────────────
+        first_name = advisor_name.split(" ")[0].capitalize()
+        name_gender = gender_detector.get_gender(first_name)
+        
+        gender_mismatch = False
+        if label == 'female' and name_gender in ['male', 'mostly_male']:
+            gender_mismatch = True
+        elif label == 'male' and name_gender in ['female', 'mostly_female']:
+            gender_mismatch = True
+
         # ── 5. REJECT male voice — no Telegram, no further action ─────────────
         if label == 'male':
             print(f"[REJECT] Male voice detected for {display_name} — rejected, no Telegram sent.")
@@ -593,6 +607,8 @@ async def predict_from_url(request: Request):
                 'rf':           result['rf'],
                 'advisor_id':   advisor_id,
                 'advisor_name': advisor_name,
+                'name_gender':  name_gender,
+                'gender_mismatch': gender_mismatch,
                 'saved_kb':     round(file_size_kb, 1),
             }
             processed_cache[audio_url] = res
@@ -605,6 +621,8 @@ async def predict_from_url(request: Request):
         result['status']               = label # 'female' or 'manual_review'
         result['advisor_id']           = advisor_id
         result['advisor_name']         = advisor_name
+        result['name_gender']          = name_gender
+        result['gender_mismatch']      = gender_mismatch
         result['source_url']           = audio_url      # original FriendshipHub URL
         result['saved_kb']             = round(file_size_kb, 1)
         result['is_female']            = True
