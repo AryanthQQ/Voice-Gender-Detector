@@ -600,7 +600,7 @@ async def predict_from_url(request: Request):
                 'is_female':    False,
                 'is_ai':        False,
                 'status':       'rejected_male',
-                'reason':       'Male voice detected. Only female voices are accepted.',
+                'reason':       'Male voice detected but name is female. Rejected for fake identity.' if gender_mismatch else 'Male voice detected. Only female voices are accepted.',
                 'ensemble':     result['ensemble'],
                 'svm':          result['svm'],
                 'gbm':          result['gbm'],
