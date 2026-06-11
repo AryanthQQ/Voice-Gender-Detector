@@ -59,6 +59,9 @@ RECORDINGS_DIR = os.path.join(os.path.dirname(__file__), config.RECORDINGS_DIR)
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 print(f"[OK] Recordings will be saved to: {RECORDINGS_DIR}")
 
+# ── Simple In-Memory Cache for n8n Loop Protection ────────────────────────────
+processed_cache = {}
+
 # ── Telegram Notifier ─────────────────────────────────────────────────────────
 class TelegramNotifier:
     """Send Telegram messages using Bot API — stdlib only, no extra packages."""
@@ -500,6 +503,11 @@ async def predict_from_url(request: Request):
     if not audio_url:
         raise HTTPException(status_code=400, detail="Missing 'url' field in request body.")
 
+    # Check cache to prevent n8n infinite loops on the same recording
+    if audio_url in processed_cache:
+        print(f"[CACHE] Returning cached result for {advisor_name}")
+        return JSONResponse(content=processed_cache[audio_url])
+
     # ── 1. Download audio from URL ────────────────────────────────────────────
     import ssl
     try:
@@ -519,7 +527,7 @@ async def predict_from_url(request: Request):
 
     if file_size_kb < 4.0:
         print(f"[REJECT] Audio file is too small ({file_size_kb:.1f} KB) for {advisor_name}.")
-        return JSONResponse(content={
+        res = {
             'accepted': False,
             'is_female': False,
             'is_ai': False,
@@ -528,7 +536,11 @@ async def predict_from_url(request: Request):
             'advisor_id': advisor_id,
             'advisor_name': advisor_name,
             'saved_kb': round(file_size_kb, 1),
-        })
+        }
+        processed_cache[audio_url] = res
+        if len(processed_cache) > 1000:
+            processed_cache.pop(next(iter(processed_cache)))
+        return JSONResponse(content=res)
 
     # ── 2. Determine extension ────────────────────────────────────────────────
     clean_url = audio_url.split("?")[0].lower()   # Remove query params (S3 signed URLs)
@@ -569,7 +581,7 @@ async def predict_from_url(request: Request):
         # ── 5. REJECT male voice — no Telegram, no further action ─────────────
         if label == 'male':
             print(f"[REJECT] Male voice detected for {display_name} — rejected, no Telegram sent.")
-            return JSONResponse(content={
+            res = {
                 'accepted':     False,
                 'is_female':    False,
                 'is_ai':        False,
@@ -582,7 +594,11 @@ async def predict_from_url(request: Request):
                 'advisor_id':   advisor_id,
                 'advisor_name': advisor_name,
                 'saved_kb':     round(file_size_kb, 1),
-            })
+            }
+            processed_cache[audio_url] = res
+            if len(processed_cache) > 1000:
+                processed_cache.pop(next(iter(processed_cache)))
+            return JSONResponse(content=res)
 
         # ── 6. Female or Manual Review — enrich result + send Telegram ───────────────────
         result['accepted']             = (label == 'female')
@@ -601,6 +617,10 @@ async def predict_from_url(request: Request):
             daemon=True
         )
         t.start()
+
+        processed_cache[audio_url] = result
+        if len(processed_cache) > 1000:
+            processed_cache.pop(next(iter(processed_cache)))
 
         return JSONResponse(content=result)
 
