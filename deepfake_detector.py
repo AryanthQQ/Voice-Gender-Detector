@@ -6,7 +6,7 @@ from transformers import pipeline
 
 # We will use a pre-trained model for deepfake audio detection.
 # You can change the MODEL_NAME to a different Hugging Face model if needed.
-MODEL_NAME = "Mihaiii/wav2vec2-base-deepfake-detection"
+MODEL_NAME = "MelodyMachine/Deepfake-audio-detection-V2"
 
 # Initialize the pipeline globally so it only loads once
 _detector = None
