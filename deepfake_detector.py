@@ -48,9 +48,9 @@ def detect_replay_attack(y, sr) -> dict:
             
         ratio = high_energy / low_energy
         
-        # Strict threshold: if high-frequency energy is less than 5% of low-freq, 
-        # it's likely a speaker playback. (Increased from 1% for better detection)
-        is_replay = ratio < 0.05
+        # Strict threshold: if high-frequency energy is less than 1.5% of low-freq
+        # Telegram/WhatsApp compresses audio heavily, so we can't keep it at 5%.
+        is_replay = ratio < 0.015
         
         return {"is_replay": is_replay, "ratio": ratio}
     except Exception as e:
@@ -96,9 +96,9 @@ def predict_is_ai(audio_path: str) -> dict:
             # Common labels for fake audio: 'fake', 'spoof', 'ai', 'synthetic'
             if label in ['fake', 'spoof', 'ai', 'synthetic']:
                 ai_conf = score
-                # STRICT THRESHOLD: If the AI model thinks there's >= 35% chance 
-                # of it being fake, we immediately flag it as AI.
-                if score >= 0.35:
+                # If the AI model thinks there's > 50% chance of it being fake, flag it.
+                # (Lowering back from 35% to 50% because 35% is too strict for WhatsApp/Telegram audio)
+                if score >= 0.50:
                     is_ai = True
                 break
 
