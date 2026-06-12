@@ -20,6 +20,10 @@ def _load_env(path='.env'):
 
 _cfg = _load_env()
 
+# Push ALL .env values into os.environ so other modules (deepfake_detector, etc.) can read them
+for _k, _v in _cfg.items():
+    os.environ.setdefault(_k, _v)
+
 # Telegram settings
 TELEGRAM_BOT_TOKEN: str = _cfg.get('TELEGRAM_BOT_TOKEN', '')
 TELEGRAM_CHAT_ID: str   = _cfg.get('TELEGRAM_CHAT_ID', '')
@@ -38,3 +42,4 @@ def telegram_configured() -> bool:
         and bool(TELEGRAM_CHAT_ID)
         and TELEGRAM_CHAT_ID != 'YOUR_CHAT_ID_HERE'
     )
+
