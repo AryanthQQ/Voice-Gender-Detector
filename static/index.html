@@ -1006,6 +1006,17 @@
 
         const data = await res.json();
         lastData = data;
+
+        // Handle AI/deepfake rejection — no ensemble/model keys in response
+        if (data.is_ai || data.accepted === false) {
+          const reason = data.reason || 'Audio was flagged as AI/synthetic or invalid.';
+          throw new Error('🤖 AI Voice Detected: ' + reason);
+        }
+
+        // Guard: if ensemble is missing for any other reason
+        if (!data.ensemble) {
+          throw new Error(data.reason || 'Unexpected server response. Please try again.');
+        }
         
         // Auto-select the model with the highest confidence score
         let bestModel = 'ensemble';
@@ -1013,7 +1024,7 @@
         
         const subModels = ['svm', 'gbm', 'rf'];
         for (const m of subModels) {
-          if (data[m].confidence > maxConf) {
+          if (data[m] && data[m].confidence > maxConf) {
             maxConf = data[m].confidence;
             bestModel = m;
           }
