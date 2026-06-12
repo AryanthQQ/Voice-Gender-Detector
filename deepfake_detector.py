@@ -48,9 +48,9 @@ def detect_replay_attack(y, sr) -> dict:
             
         ratio = high_energy / low_energy
         
-        # Strict threshold: if high-frequency energy is less than 1% of low-freq, 
-        # it's likely a speaker playback.
-        is_replay = ratio < 0.01 
+        # Strict threshold: if high-frequency energy is less than 5% of low-freq, 
+        # it's likely a speaker playback. (Increased from 1% for better detection)
+        is_replay = ratio < 0.05
         
         return {"is_replay": is_replay, "ratio": ratio}
     except Exception as e:
@@ -85,7 +85,7 @@ def predict_is_ai(audio_path: str) -> dict:
         predictions = detector(y)
         
         # The model usually outputs 'fake' or 'real' / 'spoof' or 'bonafide'
-        # Let's map it safely.
+        # Let's map it safely and aggressively.
         is_ai = False
         ai_conf = 0.0
         
@@ -93,24 +93,14 @@ def predict_is_ai(audio_path: str) -> dict:
             label = pred['label'].lower()
             score = pred['score']
             
-            # Common labels for fake audio: 'fake', 'spoof', 'ai'
+            # Common labels for fake audio: 'fake', 'spoof', 'ai', 'synthetic'
             if label in ['fake', 'spoof', 'ai', 'synthetic']:
-                if score > ai_conf:
-                    ai_conf = score
+                ai_conf = score
+                # STRICT THRESHOLD: If the AI model thinks there's >= 35% chance 
+                # of it being fake, we immediately flag it as AI.
+                if score >= 0.35:
                     is_ai = True
-            elif label in ['real', 'bonafide', 'human']:
-                if score > ai_conf:
-                    # If highest confidence is 'real', then is_ai remains False
-                    pass
-        
-        # If the model has different label names, we just pick the top one
-        top_pred = predictions[0]
-        if top_pred['label'].lower() in ['fake', 'spoof', 'ai', 'synthetic']:
-            is_ai = True
-            ai_conf = top_pred['score']
-        elif top_pred['label'].lower() in ['real', 'bonafide', 'human']:
-            is_ai = False
-            ai_conf = top_pred['score']
+                break
 
         # --- REPLAY ATTACK CHECK ---
         replay_result = detect_replay_attack(y, sr)
