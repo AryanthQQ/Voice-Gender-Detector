@@ -269,6 +269,9 @@ def extract_features(audio_path: str) -> dict:
     kurt = np.sum(power_norm * ((freqs_filt / 1000.0 - meanfreq) / (sd + 1e-10)) ** 4)
     sp_ent = -np.sum(power_norm * np.log2(power_norm + 1e-10))
     sfm_val = librosa.feature.spectral_flatness(y=y)[0].mean()
+    if sfm_val > 0.15:
+        raise ValueError(f"Too much background noise detected (Noise level: {sfm_val:.2f}). Please record in a quieter environment.")
+        
     mode_idx = np.argmax(power)
     mode = freqs_filt[mode_idx] / 1000.0
     centroid = np.sum(freqs_filt * power_norm) / 1000.0
@@ -278,9 +281,17 @@ def extract_features(audio_path: str) -> dict:
             y, fmin=librosa.note_to_hz('C2'),
             fmax=librosa.note_to_hz('C7'), sr=sr
         )
+        
+        if voiced_flag is not None:
+            voiced_ratio = np.sum(voiced_flag) / len(voiced_flag)
+            if voiced_ratio < 0.15:
+                raise ValueError(f"Voice is too faint compared to background noise. Please speak closer to the microphone.")
+                
         f0_voiced = f0[voiced_flag] if voiced_flag is not None else np.array([])
         f0_voiced = f0_voiced[~np.isnan(f0_voiced)]
-    except Exception:
+    except Exception as e:
+        if isinstance(e, ValueError):
+            raise e
         f0_voiced = np.array([])
 
     if len(f0_voiced) > 0:
@@ -424,6 +435,20 @@ def predict(file: UploadFile = File(...)):
         import soundfile as sf
         import librosa
         y, sr = librosa.load(saved_path, sr=16000)
+        
+        # ── IMMEDIATE VOLUME CHECK ──
+        max_amp = np.max(np.abs(y))
+        if max_amp < 0.10:
+            print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f})")
+            return JSONResponse(content={
+                'accepted': False,
+                'is_female': False,
+                'is_ai': False,
+                'status': 'rejected_fake',
+                'reason': "Audio volume is very low or completely silent. Please speak loudly and clearly.",
+                'saved_as': os.path.basename(saved_path),
+            })
+            
         norm_name = f"voice_{timestamp}_norm.wav"
         norm_path = os.path.join(RECORDINGS_DIR, norm_name)
         sf.write(norm_path, y, 16000)
@@ -634,6 +659,25 @@ def predict_from_url(body: PredictUrlRequest):
             import librosa
             y, sr = librosa.load(tmp_path, sr=16000)
             
+            # ── IMMEDIATE VOLUME CHECK ──
+            max_amp = np.max(np.abs(y))
+            if max_amp < 0.10:
+                print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f}) for {advisor_name}")
+                res = {
+                    'accepted': False,
+                    'is_female': False,
+                    'is_ai': False,
+                    'status': 'rejected_fake',
+                    'reason': "Audio volume is very low or completely silent. Please speak loudly and clearly.",
+                    'advisor_id': advisor_id,
+                    'advisor_name': advisor_name,
+                    'saved_kb': round(file_size_kb, 1),
+                }
+                processed_cache[audio_url] = res
+                if len(processed_cache) > 1000:
+                    processed_cache.pop(next(iter(processed_cache)))
+                return JSONResponse(content=res)
+                
             duration = len(y) / sr
             if duration < 4.0:
                 print(f"[REJECT] Audio too short ({duration:.1f}s) for {advisor_name}")
