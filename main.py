@@ -340,12 +340,14 @@ def predict_gender(features: dict) -> dict:
     final_label = best_model[0]
     final_conf = best_model[1]
 
+    male_votes = sum([svm_pred, gbm_pred, rf_pred])
+
     # ── PITCH (FREQUENCY) HARD FILTER & MANUAL REVIEW ───────────────────
     meanfun_hz = features['meanfun'] * 1000
     meanfreq_hz = features['meanfreq'] * 1000
     if final_label == 'female':
-        if meanfun_hz < 115.0 or meanfreq_hz < 115.0:
-            # Definitely Male range (below 115 Hz is clearly male)
+        if meanfun_hz < 115.0 or (meanfreq_hz < 185.0 and male_votes >= 1):
+            # Definitely Male range (or low frequency male confusing the models)
             final_label = 'male'
             final_conf = 0.999
             print(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
