@@ -31,9 +31,9 @@ class AdvancedDeepfakeDetector:
         try:
             audio, sr = librosa.load(audio_path, sr=16000)
             
-            # 10 second chunks mein process karo (memory safe)
-            if len(audio) > 16000 * 10:
-                audio = audio[:16000 * 10]
+            # 3 second chunks mein process karo (bahut tez speed ke liye)
+            if len(audio) > 16000 * 3:
+                audio = audio[:16000 * 3]
             
             inputs = self.feature_extractor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}

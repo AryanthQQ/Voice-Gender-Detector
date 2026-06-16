@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
+from pydantic import BaseModel
 import config
 from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
@@ -377,7 +378,7 @@ async def root():
 
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+def predict(file: UploadFile = File(...)):
     """
     Upload audio → save to disk → extract features → predict gender → notify Telegram.
     """
@@ -385,7 +386,7 @@ async def predict(file: UploadFile = File(...)):
         raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
 
     # ── 1. Read uploaded audio content ────────────────────────────────────────
-    content = await file.read()
+    content = file.file.read()
     file_size_kb = len(content) / 1024
 
     # ── 2. Determine file extension ───────────────────────────────────────────
@@ -508,8 +509,13 @@ async def list_recordings():
     return JSONResponse(content={'total': len(files), 'recordings': files})
 
 
+class PredictUrlRequest(BaseModel):
+    url: str
+    userId: str = "unknown"
+    fullname: str = "Unknown"
+
 @app.post("/predict-url")
-async def predict_from_url(request: Request):
+def predict_from_url(body: PredictUrlRequest):
     """
     Automation endpoint for n8n / AWS Lambda / any webhook.
     Accepts audio URL (S3 pre-signed URL or any HTTP URL), downloads it,
@@ -531,10 +537,9 @@ async def predict_from_url(request: Request):
     if svm_model is None:
         raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
 
-    body = await request.json()
-    audio_url    = body.get("url", "").strip()
-    advisor_id   = str(body.get("userId", "unknown"))
-    advisor_name = str(body.get("fullname", "Unknown"))
+    audio_url    = body.url.strip()
+    advisor_id   = str(body.userId)
+    advisor_name = str(body.fullname)
 
     if not audio_url:
         raise HTTPException(status_code=400, detail="Missing 'url' field in request body.")
