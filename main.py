@@ -438,7 +438,7 @@ def predict(file: UploadFile = File(...)):
         
         # ── IMMEDIATE VOLUME CHECK ──
         max_amp = np.max(np.abs(y))
-        if max_amp < 0.10:
+        if max_amp < 0.20:
             print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f})")
             return JSONResponse(content={
                 'accepted': False,
@@ -461,6 +461,29 @@ def predict(file: UploadFile = File(...)):
         print(f"[WARN] Failed to normalize audio: {e}")
 
     print(f"[SAVE] Recording saved: {saved_path} ({file_size_kb:.1f} KB)")
+    
+    # --- STT HUMAN AUDIBILITY CHECK ---
+    try:
+        stt_audio, _ = librosa.load(saved_path, sr=16000)
+        inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt', padding=True)
+        with torch.no_grad():
+            logits = stt_model(**inputs).logits
+        predicted_ids = torch.argmax(logits, dim=-1)
+        transcription = stt_processor.batch_decode(predicted_ids)[0]
+        words = transcription.split()
+        print(f"[STT] Transcription for uploaded file: '{transcription}'")
+        if len(words) <= 3:
+            print(f"[REJECT] Audio unintelligible, only {len(words)} words detected.")
+            return JSONResponse(content={
+                'accepted': False,
+                'is_female': False,
+                'is_ai': False,
+                'status': 'rejected_fake',
+                'reason': f"Voice is not clearly audible (only {len(words)} words detected). Please speak loud and clear.",
+                'saved_as': os.path.basename(saved_path),
+            })
+    except Exception as e:
+        print(f"[WARN] Failed STT check for {saved_path}: {e}")
 
     # ── 4. Extract features + predict (use saved file directly) ──────────────
     try:
@@ -661,7 +684,7 @@ def predict_from_url(body: PredictUrlRequest):
             
             # ── IMMEDIATE VOLUME CHECK ──
             max_amp = np.max(np.abs(y))
-            if max_amp < 0.10:
+            if max_amp < 0.20:
                 print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f}) for {advisor_name}")
                 res = {
                     'accepted': False,
@@ -713,7 +736,7 @@ def predict_from_url(body: PredictUrlRequest):
             transcription = stt_processor.batch_decode(predicted_ids)[0]
             
             words = transcription.split()
-            if len(words) <= 2:
+            if len(words) <= 3:
                 print(f"[REJECT] Audio only contains <=2 words: '{transcription}'.")
                 res = {
                     'accepted': False,
