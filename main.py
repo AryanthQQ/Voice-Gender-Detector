@@ -269,7 +269,7 @@ def extract_features(audio_path: str) -> dict:
     kurt = np.sum(power_norm * ((freqs_filt / 1000.0 - meanfreq) / (sd + 1e-10)) ** 4)
     sp_ent = -np.sum(power_norm * np.log2(power_norm + 1e-10))
     sfm_val = librosa.feature.spectral_flatness(y=y)[0].mean()
-    if sfm_val > 0.15:
+    if sfm_val > 0.08:
         raise ValueError(f"Too much background noise detected (Noise level: {sfm_val:.2f}). Please record in a quieter environment.")
         
     mode_idx = np.argmax(power)
@@ -284,7 +284,7 @@ def extract_features(audio_path: str) -> dict:
         
         if voiced_flag is not None:
             voiced_ratio = np.sum(voiced_flag) / len(voiced_flag)
-            if voiced_ratio < 0.15:
+            if voiced_ratio < 0.25:
                 raise ValueError(f"Voice is too faint compared to background noise. Please speak closer to the microphone.")
                 
         f0_voiced = f0[voiced_flag] if voiced_flag is not None else np.array([])
@@ -471,15 +471,16 @@ def predict(file: UploadFile = File(...)):
         predicted_ids = torch.argmax(logits, dim=-1)
         transcription = stt_processor.batch_decode(predicted_ids)[0]
         words = transcription.split()
+        meaningful_words = [w for w in words if len(w) >= 3]
         print(f"[STT] Transcription for uploaded file: '{transcription}'")
-        if len(words) <= 3:
-            print(f"[REJECT] Audio unintelligible, only {len(words)} words detected.")
+        if len(meaningful_words) <= 3:
+            print(f"[REJECT] Audio unintelligible, only {len(meaningful_words)} meaningful words detected.")
             return JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': False,
                 'status': 'rejected_fake',
-                'reason': f"Voice is not clearly audible (only {len(words)} words detected). Please speak loud and clear.",
+                'reason': f"Voice is not clearly audible (only {len(meaningful_words)} meaningful words detected). Please speak loud and clear.",
                 'saved_as': os.path.basename(saved_path),
             })
     except Exception as e:
@@ -736,8 +737,9 @@ def predict_from_url(body: PredictUrlRequest):
             transcription = stt_processor.batch_decode(predicted_ids)[0]
             
             words = transcription.split()
-            if len(words) <= 3:
-                print(f"[REJECT] Audio only contains <=2 words: '{transcription}'.")
+            meaningful_words = [w for w in words if len(w) >= 3]
+            if len(meaningful_words) <= 3:
+                print(f"[REJECT] Audio only contains <=3 meaningful words: '{transcription}'.")
                 res = {
                     'accepted': False,
                     'is_female': False,
