@@ -32,6 +32,10 @@ import config
 from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
 
+# Limit entire request pipeline to 2 concurrent tasks to prevent VPS RAM exhaustion
+import threading
+GLOBAL_PROCESS_LOCK = threading.Semaphore(2)
+
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Voice Gender Detection API", version="2.0.0")
 
