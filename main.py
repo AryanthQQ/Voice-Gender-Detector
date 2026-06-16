@@ -224,15 +224,15 @@ def extract_features(audio_path: str) -> dict:
 
     # ── AUDIO FILTERING (IMPROVES ACCURACY) ──────────────────────────────────
     # 1. Raw Silence / Blank Noise Detection (Check BEFORE normalization)
-    if np.max(np.abs(y)) < 0.01:
-        raise ValueError("Audio is completely silent (no speech detected).")
+    if np.max(np.abs(y)) < 0.05:
+        raise ValueError("Audio volume is very low or completely silent. Please speak loudly and clearly.")
         
     # 2. Silence Trimming (Shuru aur aakhir ka blank noise/shanti hatana)
-    y, _ = librosa.effects.trim(y, top_db=30)
+    y, _ = librosa.effects.trim(y, top_db=20)
     
     # 3. Short Audio Rejection
-    if len(y) < 16000 * 0.5:
-        raise ValueError("Audio is too short to analyze after removing silence.")
+    if len(y) < 16000 * 1.5:
+        raise ValueError("Voice is not clear or mostly background noise. Please record in a quiet place.")
 
     # 4. Volume Normalization (Aawaaz ka level barabar karna)
     y = librosa.util.normalize(y)
@@ -480,6 +480,20 @@ def predict(file: UploadFile = File(...)):
 
         return JSONResponse(content=result)
 
+    except ValueError as e:
+        # Keep failed recording for debugging but mark it
+        err_path = saved_path.replace(ext, f'_FAILED{ext}')
+        try:
+            os.rename(saved_path, err_path)
+        except Exception:
+            pass
+        print(f"[REJECT] Audio validation failed: {e}")
+        return JSONResponse(content={
+            'accepted': False,
+            'is_female': False,
+            'reason': str(e),
+            'saved_as': os.path.basename(err_path)
+        })
     except Exception as e:
         # Keep failed recording for debugging but mark it
         err_path = saved_path.replace(ext, f'_FAILED{ext}')
@@ -763,6 +777,18 @@ def predict_from_url(body: PredictUrlRequest):
 
         return JSONResponse(content=result)
 
+    except ValueError as e:
+        print(f"[REJECT] Audio validation failed for {advisor_name} (ID: {advisor_id}): {e}")
+        return JSONResponse(content={
+            'accepted': False,
+            'is_female': False,
+            'is_ai': False,
+            'status': 'rejected_fake',
+            'reason': str(e),
+            'advisor_id': advisor_id,
+            'advisor_name': advisor_name,
+            'saved_kb': round(file_size_kb, 1) if 'file_size_kb' in locals() else 0.0,
+        })
     except Exception as e:
         print(f"[REJECT] Audio processing error for {advisor_name} (ID: {advisor_id}): {e}")
         return JSONResponse(content={
