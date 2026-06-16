@@ -509,9 +509,11 @@ async def list_recordings():
     return JSONResponse(content={'total': len(files), 'recordings': files})
 
 
+from typing import Union
+
 class PredictUrlRequest(BaseModel):
     url: str
-    userId: str = "unknown"
+    userId: Union[str, int] = "unknown"
     fullname: str = "Unknown"
 
 @app.post("/predict-url")
