@@ -45,6 +45,15 @@ gender_detector = gender.Detector()
 # Initialize Advanced Deepfake Detector
 advanced_deepfake_detector = AdvancedDeepfakeDetector()
 
+# Initialize Speech-to-Text Model
+import torch
+from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
+print("[STT] Loading Speech-to-Text model...")
+stt_processor = Wav2Vec2Processor.from_pretrained('facebook/wav2vec2-base-960h')
+stt_model = Wav2Vec2ForCTC.from_pretrained('facebook/wav2vec2-base-960h')
+stt_model.eval()
+print("[STT] Speech-to-Text model loaded successfully!")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -635,6 +644,37 @@ def predict_from_url(body: PredictUrlRequest):
             tmp_path = norm_path
         except Exception as e:
             print(f"[WARN] Failed to normalize audio: {e}")
+
+        # --- STT ONE-WORD REJECT CHECK ---
+        try:
+            stt_audio, _ = librosa.load(tmp_path, sr=16000)
+            inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt', padding=True)
+            with torch.no_grad():
+                logits = stt_model(**inputs).logits
+            predicted_ids = torch.argmax(logits, dim=-1)
+            transcription = stt_processor.batch_decode(predicted_ids)[0]
+            
+            words = transcription.split()
+            if len(words) <= 1:
+                print(f"[REJECT] Audio only contains <=1 word: '{transcription}'.")
+                res = {
+                    'accepted': False,
+                    'is_female': False,
+                    'is_ai': False,
+                    'status': 'rejected_fake',
+                    'reason': f"Audio only contains 1 word ('{transcription}'). Please speak a full clear sentence.",
+                    'advisor_id': advisor_id,
+                    'advisor_name': advisor_name,
+                    'saved_kb': round(file_size_kb, 1),
+                }
+                processed_cache[audio_url] = res
+                if len(processed_cache) > 1000:
+                    processed_cache.pop(next(iter(processed_cache)))
+                return JSONResponse(content=res)
+            else:
+                print(f"[STT] Transcribed ({len(words)} words): {transcription}")
+        except Exception as e:
+            print(f"[WARN] STT Transcription failed: {e}")
 
         # ── 4. Extract features + predict ─────────────────────────────────────
         ai_result = advanced_deepfake_detector.predict(tmp_path)
