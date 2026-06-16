@@ -1,185 +1,102 @@
-# Voice Gender Detector 🎙️
+---
+license: mit
+datasets:
+- fixie-ai/librispeech_asr
+language:
+- en
+base_model:
+- facebook/wav2vec2-base
+pipeline_tag: audio-classification
+metrics:
+- accuracy
+library_name: transformers
+tags:
+- voice_phishing
+- audio_classification
+---
+# Voice Detection AI - Real vs AI Audio Classifier
 
-**AI-powered voice gender detection using an ensemble of 3 machine learning models.**
+![image/webp](https://cdn-uploads.huggingface.co/production/uploads/674d0f7d7951ab7c4e09f748/-nSLK7WFumAlfv6X69TsW.webp)
 
-Live demo (original R version): [voicegender.herokuapp.com](https://voicegender.herokuapp.com)
+### **Model Overview**
+This model is a fine-tuned Wav2Vec2-based audio classifier capable of distinguishing between **real human voices** and **AI-generated voices**. It has been trained on a dataset containing samples from various TTS models and real human audio recordings.
 
 ---
 
-## Features
-
-- 🎙️ **Record voice** directly in the browser (no upload needed)
-- 📁 **Upload WAV / MP3 / OGG / FLAC** audio files
-- 🤖 **3 ML models** — SVM (98.9%), Gradient Boosting (98.3%), Random Forest (98.1%)
-- 📊 **Ensemble voting** for highest accuracy
-- 💾 **Auto-saves** every recording to the `recordings/` folder
-- 📲 **Telegram notifications** sent to admin after every verification
-- 🔒 Privacy-first: all processing is local, no data sent externally
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Backend | Python 3.x + FastAPI + Uvicorn |
-| ML | scikit-learn (SVM, GBM, Random Forest) |
-| Audio | librosa + soundfile |
-| Frontend | Vanilla HTML/CSS/JS (dark theme) |
-| Notifications | Telegram Bot API |
+### **Model Details**
+- **Architecture:** Wav2Vec2ForSequenceClassification
+- **Fine-tuned on:** Custom dataset with real and AI-generated audio
+- **Classes:**
+  1. Real Human Voice
+  2. AI-generated (e.g., Melgan, DiffWave, etc.)
+- **Input Requirements:**
+  - Audio format: `.wav`, `.mp3`, etc.
+  - Sample rate: 16kHz
+  - Max duration: 10 seconds (longer audios are truncated, shorter ones are padded)
 
 ---
 
-## Quick Start
 
-### 1. Install dependencies
+### **Performance**
+- **Robustness:** Successfully classifies across multiple AI-generation models.
+- **Limitations:** Struggles with certain unseen AI-generation models (e.g., ElevenLabs).
 
+---
+
+### **How to Use**
+
+#### **1. Install Dependencies**
+Make sure you have `transformers` and `torch` installed:
 ```bash
-pip install fastapi uvicorn scikit-learn numpy librosa soundfile python-multipart joblib
+pip install transformers torch torchaudio
 ```
-
-### 2. Train the ML models
-
-```bash
-python train_model.py
+##  Usage
+### Here's how to use VoiceGUARD for audio classification:
 ```
+import torch
+from transformers import Wav2Vec2ForSequenceClassification, Wav2Vec2Processor
+import torchaudio
 
-This reads `voice.csv` and saves 3 trained models + scaler to `models/`.
+# Load model and processor
+model_name = "Mrkomiljon/voiceGUARD"
+model = Wav2Vec2ForSequenceClassification.from_pretrained(model_name)
+processor = Wav2Vec2Processor.from_pretrained(model_name)
 
-### 3. Configure Telegram (optional)
+# Load audio
+waveform, sample_rate = torchaudio.load("path_to_audio_file.wav")
 
-Copy the example env file and fill in your credentials:
+# Resample if necessary
+if sample_rate != 16000:
+    resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
+    waveform = resampler(waveform)
 
-```bash
-cp .env.example .env
+# Preprocess
+inputs = processor(waveform.squeeze().numpy(), sampling_rate=16000, return_tensors="pt", padding=True)
+
+# Inference
+with torch.no_grad():
+    logits = model(**inputs).logits
+    predicted_ids = torch.argmax(logits, dim=-1)
+
+# Map to label
+labels = ["Real Human Voice", "AI-generated"]
+prediction = labels[predicted_ids.item()]
+print(f"Prediction: {prediction}")
 ```
+## Training Procedure
+- Data Collection: Compiled a balanced dataset of real human voices and AI-generated samples from various TTS models.
+- Preprocessing: Standardized audio formats, resampled to 16 kHz, and adjusted durations to 10 seconds.
+- Fine-Tuning: Utilized the Wav2Vec2 architecture for sequence classification, training for 3 epochs with a learning rate of 1e-5.
+## Evaluation
+- Metrics: Accuracy, Precision, Recall
+- Results: Achieved 99.8% validation accuracy on the test set.
+## Limitations and Future Work
+- While VoiceGUARD performs robustly across known AI-generation models, it may encounter challenges with novel or unseen models.
+- Future work includes expanding the training dataset with samples from emerging TTS technologies to enhance generalization.
 
-Edit `.env`:
-```
-TELEGRAM_BOT_TOKEN=your_bot_token_from_@BotFather
-TELEGRAM_CHAT_ID=your_chat_id_from_@userinfobot
-NOTIFY_ON=all        # or 'female' to only notify for female detections
-```
+## License
+This project is licensed under the MIT License. See the LICENSE file for details.
 
-> **How to get credentials:**
-> 1. Open Telegram → search `@BotFather` → `/newbot` → copy the token
-> 2. Search `@userinfobot` → start it → copy your Chat ID
-
-### 4. Run the server
-
-```bash
-python main.py
-```
-
-Open **http://localhost:8000** in your browser.
-
----
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/` | Web UI |
-| `POST` | `/predict` | Upload audio → returns gender prediction JSON |
-| `GET` | `/health` | Server health + recording count |
-| `GET` | `/recordings` | List all saved recordings (admin) |
-
-### Example `/predict` response
-
-```json
-{
-  "ensemble": { "label": "female", "confidence": 91.2, "male_votes": 0, "total_votes": 3 },
-  "svm":      { "label": "female", "confidence": 89.3 },
-  "gbm":      { "label": "female", "confidence": 94.1 },
-  "rf":       { "label": "female", "confidence": 82.5 },
-  "features": { "meanfun_hz": 198.0, "meanfreq_hz": 212.0, "IQR": 0.0891 },
-  "saved_as": "voice_20260604_113522.wav",
-  "saved_kb": 96.0,
-  "telegram_configured": true
-}
-```
-
----
-
-## Telegram Notification Format
-
-When a voice is analyzed, admin receives:
-
-```
-🎙️ Voice Gender Verification Alert
-━━━━━━━━━━━━━━━━━━━━━━
-📅 Time: 2026-06-04 11:35:22
-🔊 File: voice_20260604_113522.wav
-📁 Size: 96.0 KB
-
-✅ 👩 VERDICT: FEMALE VERIFIED
-Confidence: 91.2%
-━━━━━━━━━━━━━━━━━━━━━━
-Model Breakdown:
-  • SVM:            Female (89%)
-  • Gradient Boost: Female (94%)
-  • Random Forest:  Female (83%)
-  • Ensemble Vote:  3/3 Female
-
-Voice Analysis:
-  • Avg Fundamental Freq: 198 Hz
-  • Mean Frequency:       212 Hz
-  • Variability (IQR):    0.0891
-━━━━━━━━━━━━━━━━━━━━━━
-Auto-verified by Voice Gender AI v2.0
-```
-
----
-
-## Dataset
-
-The model is trained on 3,168 voice samples (50% male, 50% female) with 20 acoustic features:
-
-`meanfreq`, `sd`, `median`, `Q25`, `Q75`, `IQR`, `skew`, `kurt`, `sp.ent`, `sfm`, `mode`, `centroid`, `meanfun`, `minfun`, `maxfun`, `meandom`, `mindom`, `maxdom`, `dfrange`, `modindx`
-
-Download: [voice.csv](voice.csv)
-
----
-
-## Model Accuracy
-
-| Model | Train | Test |
-|---|---|---|
-| SVM (RBF) | ~99% | **98.9%** |
-| Gradient Boosting | ~99% | **98.3%** |
-| Random Forest | ~99% | **98.1%** |
-| Ensemble (majority vote) | — | **~99%** |
-
----
-
-## Project Structure
-
-```
-voice-gender-master/
-├── main.py              # FastAPI backend (predict + save + notify)
-├── train_model.py       # Train ML models from voice.csv
-├── config.py            # Load .env settings
-├── .env.example         # Template for Telegram credentials
-├── .gitignore           # Excludes .env, recordings/, models/
-├── voice.csv            # Training dataset (3,168 samples)
-├── models/              # Trained model files (git-ignored, regenerate with train_model.py)
-├── recordings/          # Saved audio files (git-ignored, user data)
-├── static/
-│   └── index.html       # Frontend UI (dark theme, responsive)
-└── Web/                 # Original R Shiny app (reference)
-```
-
----
-
-## Original R Version
-
-The original R Shiny app is in the `Web/` directory. It requires R with packages:
-`shiny`, `shinyjs`, `RJSONIO`, `RCurl`, `warbleR`, `tuneR`, `seewave`
-
----
-
-## License & Credits
-
-- Original R project by [Kory Becker](http://primaryobjects.com/kory-becker)
-- Python/FastAPI rebuild + Telegram integration added 2026
-- Dataset: 3,168 voice samples from Harvard-Haskins, TSP, VoxForge, CMU-ARCTIC
+## Acknowledgements
+* Special thanks to the developers of the [Wav2Vec2](https://huggingface.co/facebook/wav2vec2-base) model and the contributors to the datasets used in this project.
+* View the complete project on [GitHub](https://github.com/Mrkomiljon/VoiceGUARD2)

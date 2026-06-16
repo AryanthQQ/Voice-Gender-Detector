@@ -45,6 +45,7 @@ venv/
 env/
 .venv/
 .env/
+.venv312/
 
 # ── IDE / editor ──────────────────────────────────────────────────────────────
 .vscode/settings.json
@@ -60,3 +61,13 @@ desktop.ini
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
 logs/
+
+# ── Data and Temp Folders ─────────────────────────────────────────────────────
+venv311/
+venv312/
+LibriSpeech/
+temp_ai_detector/
+data/
+recordings/
+*.exe
+*.tar.gz

@@ -629,7 +629,8 @@
           <div class="confidence-text" id="confText"></div>
         </div>
 
-        <!-- Verification badge -->
+        <!-- Verification badges -->
+        <div id="aiBadge" class="verify-badge" style="display:none;"></div>
         <div id="verifyBadge" class="verify-badge" style="display:none;"></div>
 
         <!-- Status strip: saved + telegram -->
@@ -984,16 +985,8 @@
           formData.append('file', recordedBlob, 'recording.wav');
         } else {
           if (!uploadedFile) throw new Error('No file selected.');
-          // Convert any format (MP3, OGG, M4A…) → WAV browser-side
-          btn.innerHTML = '<span class="spinner"></span> Converting to WAV...';
-          let wavBlob;
-          try {
-            wavBlob = await convertToWav(uploadedFile);
-          } catch (convErr) {
-            throw new Error('Could not decode audio file. Try a WAV or MP3 file.');
-          }
-          const baseName = uploadedFile.name.replace(/\.[^.]+$/, '');
-          formData.append('file', wavBlob, baseName + '.wav');
+          // Send original file directly to backend, preserving original extension
+          formData.append('file', uploadedFile, uploadedFile.name);
           btn.innerHTML = '<span class="spinner"></span> Analyzing...';
         }
 
@@ -1007,13 +1000,7 @@
         const data = await res.json();
         lastData = data;
 
-        // Handle AI/deepfake rejection — no ensemble/model keys in response
-        if (data.is_ai || data.accepted === false) {
-          const reason = data.reason || 'Audio was flagged as AI/synthetic or invalid.';
-          throw new Error('🤖 AI Voice Detected: ' + reason);
-        }
-
-        // Guard: if ensemble is missing for any other reason
+        // Guard: if ensemble is missing for any reason
         if (!data.ensemble) {
           throw new Error(data.reason || 'Unexpected server response. Please try again.');
         }
@@ -1078,6 +1065,31 @@
         vbadge.textContent = '🔵 Male Detected';
       }
       vbadge.style.display = 'inline-flex';
+
+      // AI Badge
+      const aiBadge = document.getElementById('aiBadge');
+      if (data.ai_error) {
+        // Show popup with explanation if model failed
+        alert("Deepfake Detector Error:\n\n" + data.ai_error + "\n\n(It defaulted to 'Real Human Voice' to prevent crashing)");
+        aiBadge.className = 'verify-badge manual_review';
+        aiBadge.style.borderColor = 'rgba(239,68,68,0.5)';
+        aiBadge.style.color = '#ef4444';
+        aiBadge.style.background = 'linear-gradient(135deg, rgba(239,68,68,0.15), rgba(239,68,68,0.05))';
+        aiBadge.textContent = '❌ AI Check Failed';
+      } else if (data.ai_voice) {
+        aiBadge.className = 'verify-badge manual_review';
+        aiBadge.style.borderColor = '';
+        aiBadge.style.color = '';
+        aiBadge.style.background = '';
+        aiBadge.textContent = '🤖 AI / Deepfake Voice Detected!';
+      } else {
+        aiBadge.className = 'verify-badge female';
+        aiBadge.style.borderColor = 'rgba(34,197,94,0.5)';
+        aiBadge.style.color = '#4ade80';
+        aiBadge.style.background = 'linear-gradient(135deg, rgba(34,197,94,0.15), rgba(34,197,94,0.05))';
+        aiBadge.textContent = '👤 Real Human Voice';
+      }
+      aiBadge.style.display = 'inline-flex';
 
       // Saved pill
       if (data.saved_as) {

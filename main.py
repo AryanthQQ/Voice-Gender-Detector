@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 
 import config
-from deepfake_detector import predict_is_ai
+from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
 
 # ── App ──────────────────────────────────────────────────────────────────────
@@ -36,6 +36,9 @@ app = FastAPI(title="Voice Gender Detection API", version="2.0.0")
 
 # Initialize name gender detector
 gender_detector = gender.Detector()
+
+# Initialize Advanced Deepfake Detector
+advanced_deepfake_detector = AdvancedDeepfakeDetector()
 
 app.add_middleware(
     CORSMiddleware,
@@ -206,11 +209,19 @@ def extract_features(audio_path: str) -> dict:
         y, sr = librosa.load(audio_path, sr=16000, mono=True)
 
     # ── AUDIO FILTERING (IMPROVES ACCURACY) ──────────────────────────────────
-    # 1. Volume Normalization (Aawaaz ka level barabar karna)
-    y = librosa.util.normalize(y)
-    
+    # 1. Raw Silence / Blank Noise Detection (Check BEFORE normalization)
+    if np.max(np.abs(y)) < 0.01:
+        raise ValueError("Audio is completely silent (no speech detected).")
+        
     # 2. Silence Trimming (Shuru aur aakhir ka blank noise/shanti hatana)
     y, _ = librosa.effects.trim(y, top_db=30)
+    
+    # 3. Short Audio Rejection
+    if len(y) < 16000 * 0.5:
+        raise ValueError("Audio is too short to analyze after removing silence.")
+
+    # 4. Volume Normalization (Aawaaz ka level barabar karna)
+    y = librosa.util.normalize(y)
 
     # 3. Bandpass Filter (50Hz - 3000Hz) - Safe Noise Reduction
     import scipy.signal
@@ -328,12 +339,12 @@ def predict_gender(features: dict) -> dict:
     meanfun_hz = features['meanfun'] * 1000
     meanfreq_hz = features['meanfreq'] * 1000
     if final_label == 'female':
-        if meanfun_hz < 155.0 or meanfreq_hz < 150.0:
-            # Definitely Male range
+        if meanfun_hz < 115.0 or meanfreq_hz < 115.0:
+            # Definitely Male range (below 115 Hz is clearly male)
             final_label = 'male'
             final_conf = 0.999
             print(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
-        elif meanfun_hz < 175.0 or meanfreq_hz < 170.0 or (final_conf * 100) < 80.0:
+        elif meanfun_hz < 140.0 or meanfreq_hz < 135.0 or (final_conf * 100) < 55.0:
             # Ambiguous pitch, frequency or low confidence -> send to manager
             final_label = 'manual_review'
             print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
@@ -391,12 +402,40 @@ async def predict(file: UploadFile = File(...)):
 
     with open(saved_path, 'wb') as f:
         f.write(content)
+        
+    # --- AUDIO NORMALIZATION (Crucial for corrupted/re-encoded files) ---
+    try:
+        import soundfile as sf
+        import librosa
+        y, sr = librosa.load(saved_path, sr=16000)
+        norm_name = f"voice_{timestamp}_norm.wav"
+        norm_path = os.path.join(RECORDINGS_DIR, norm_name)
+        sf.write(norm_path, y, 16000)
+        
+        # Replace saved_path with the normalized file
+        os.remove(saved_path)
+        saved_path = norm_path
+        saved_name = norm_name
+    except Exception as e:
+        print(f"[WARN] Failed to normalize audio: {e}")
+
     print(f"[SAVE] Recording saved: {saved_path} ({file_size_kb:.1f} KB)")
 
     # ── 4. Extract features + predict (use saved file directly) ──────────────
     try:
-        # Check if AI or Human first
-        ai_result = predict_is_ai(saved_path)
+        # Always run feature extraction first
+        features = extract_features(saved_path)
+        
+        # Check if AI or Human using the advanced ML Model
+        ai_result = advanced_deepfake_detector.predict(saved_path)
+        
+        result   = predict_gender(features)
+        result['ai'] = ai_result
+        result['ai_voice'] = ai_result.get('is_ai', False)
+        if ai_result.get('status') in ['model_error', 'processing_error']:
+            result['ai_error'] = ai_result.get('reason', 'Failed to load deepfake model')
+        result['telegram_configured'] = config.telegram_configured()
+
         if ai_result.get('is_ai'):
             reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
             print(f"[REJECT] Spoof/AI Voice detected. Reason: {reason_str}")
@@ -404,31 +443,24 @@ async def predict(file: UploadFile = File(...)):
             err_path = saved_path.replace(ext, f'_AI_FAKE{ext}')
             try: os.rename(saved_path, err_path)
             except: pass
-            return JSONResponse(content={
-                'accepted': False,
-                'is_female': False,
-                'is_ai': True,
-                'ai_confidence': ai_result.get('confidence'),
-                'reason': reason_str,
-                'saved_as': os.path.basename(err_path)
-            })
+            
+            result['accepted'] = False
+            result['status'] = 'rejected_fake'
+            result['reason'] = reason_str
+            result['saved_as'] = os.path.basename(err_path)
+            result['saved_kb'] = round(file_size_kb, 1)
+        else:
+            # Add saved filename to result for frontend display
+            result['saved_as'] = saved_name
+            result['saved_kb'] = round(file_size_kb, 1)
 
-        features = extract_features(saved_path)
-        result   = predict_gender(features)
-        result['ai'] = ai_result
-
-        # Add saved filename to result for frontend display
-        result['saved_as'] = saved_name
-        result['saved_kb'] = round(file_size_kb, 1)
-        result['telegram_configured'] = config.telegram_configured()
-
-        # ── 6. Send Telegram notification (background thread) ─────────────────
-        t = threading.Thread(
-            target=_notify_async,
-            args=(result, saved_name, file_size_kb),
-            daemon=True
-        )
-        t.start()
+            # ── 6. Send Telegram notification (background thread) ─────────────────
+            t = threading.Thread(
+                target=_notify_async,
+                args=(result, saved_name, file_size_kb),
+                daemon=True
+            )
+            t.start()
 
         return JSONResponse(content=result)
 
@@ -560,24 +592,40 @@ async def predict_from_url(request: Request):
             tmp_path = tmp.name
         print(f"[URL] Downloaded {file_size_kb:.1f} KB -> temp file (no local save)")
 
-        # ── 4. Extract features + predict ─────────────────────────────────────
-        ai_result = predict_is_ai(tmp_path)
-        if ai_result.get('is_ai'):
-            reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
-            print(f"[REJECT] Spoof/AI Voice detected for {advisor_name}. Reason: {reason_str}")
-            return JSONResponse(content={
-                'accepted': False,
-                'is_female': False,
-                'is_ai': True,
-                'ai_confidence': ai_result.get('confidence'),
-                'reason': reason_str,
-                'advisor_id': advisor_id,
-                'advisor_name': advisor_name,
-            })
+        # --- AUDIO NORMALIZATION (Crucial for corrupted/re-encoded files) ---
+        try:
+            import soundfile as sf
+            import librosa
+            y, sr = librosa.load(tmp_path, sr=16000)
+            norm_path = tmp_path + "_norm.wav"
+            sf.write(norm_path, y, 16000)
+            os.remove(tmp_path)
+            tmp_path = norm_path
+        except Exception as e:
+            print(f"[WARN] Failed to normalize audio: {e}")
 
+        # ── 4. Extract features + predict ─────────────────────────────────────
+        ai_result = advanced_deepfake_detector.predict(tmp_path)
         features = extract_features(tmp_path)
         result   = predict_gender(features)
         result['ai'] = ai_result
+        result['ai_voice'] = ai_result.get('is_ai', False)
+
+        if ai_result.get('is_ai'):
+            reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
+            print(f"[REJECT] Spoof/AI Voice detected for {advisor_name}. Reason: {reason_str}")
+            
+            result['accepted'] = False
+            result['status'] = 'rejected_fake'
+            result['reason'] = reason_str
+            result['advisor_id'] = advisor_id
+            result['advisor_name'] = advisor_name
+            result['saved_kb'] = round(file_size_kb, 1)
+            
+            processed_cache[audio_url] = result
+            if len(processed_cache) > 1000:
+                processed_cache.pop(next(iter(processed_cache)))
+            return JSONResponse(content=result)
 
         label = result['ensemble']['label']
         display_name = f"{advisor_name} (ID:{advisor_id})"
@@ -627,6 +675,7 @@ async def predict_from_url(request: Request):
         result['saved_kb']             = round(file_size_kb, 1)
         result['is_female']            = True
         result['telegram_configured']  = config.telegram_configured()
+        result['ai_voice']             = ai_result.get('is_ai', False)
 
         # ── 7. Telegram notification (background) ─────────────────────────────
         t = threading.Thread(

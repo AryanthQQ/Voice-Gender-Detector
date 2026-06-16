@@ -24,9 +24,9 @@ _cfg = _load_env()
 for _k, _v in _cfg.items():
     os.environ.setdefault(_k, _v)
 
-# Telegram settings
-TELEGRAM_BOT_TOKEN: str = _cfg.get('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT_ID: str   = _cfg.get('TELEGRAM_CHAT_ID', '')
+# Telegram Config (Optional)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # Recordings directory (relative to main.py location)
 RECORDINGS_DIR: str = _cfg.get('RECORDINGS_DIR', 'recordings')
