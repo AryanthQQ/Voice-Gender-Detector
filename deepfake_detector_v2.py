@@ -105,7 +105,7 @@ class AdvancedDeepfakeDetector:
         print(f"   Real: {sum(y==0)} | Fake: {sum(y==1)}")
         return self
 
-    def predict(self, audio_path: str, threshold=0.65):
+    def predict(self, audio_path: str, threshold=0.50):
         """Final prediction function for your agent"""
         if not self.is_trained:
             if os.path.exists("models/wav2vec_xgb.pkl"):

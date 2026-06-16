@@ -355,12 +355,12 @@ def predict_gender(features: dict) -> dict:
     meanfun_hz = features['meanfun'] * 1000
     meanfreq_hz = features['meanfreq'] * 1000
     if final_label == 'female':
-        if meanfun_hz < 115.0 or meanfreq_hz < 115.0:
-            # Definitely Male range (below 115 Hz is clearly male)
+        if meanfun_hz < 125.0 or meanfreq_hz < 125.0:
+            # Definitely Male range (below 125 Hz is clearly male)
             final_label = 'male'
             final_conf = 0.999
             print(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
-        elif meanfun_hz < 140.0 or meanfreq_hz < 135.0 or (final_conf * 100) < 55.0:
+        elif meanfun_hz < 155.0 or meanfreq_hz < 145.0 or (final_conf * 100) < 70.0:
             # Ambiguous pitch, frequency or low confidence -> send to manager
             final_label = 'manual_review'
             print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
@@ -621,14 +621,14 @@ def predict_from_url(body: PredictUrlRequest):
             y, sr = librosa.load(tmp_path, sr=16000)
             
             duration = len(y) / sr
-            if duration < 3.0:
+            if duration < 4.0:
                 print(f"[REJECT] Audio too short ({duration:.1f}s) for {advisor_name}")
                 res = {
                     'accepted': False,
                     'is_female': False,
                     'is_ai': False,
                     'status': 'rejected_fake',
-                    'reason': f"Audio too short ({duration:.1f}s). Please speak clearly for at least 3 seconds.",
+                    'reason': f"Audio too short ({duration:.1f}s). Please speak clearly for at least 4 seconds.",
                     'advisor_id': advisor_id,
                     'advisor_name': advisor_name,
                     'saved_kb': round(file_size_kb, 1),
@@ -655,14 +655,14 @@ def predict_from_url(body: PredictUrlRequest):
             transcription = stt_processor.batch_decode(predicted_ids)[0]
             
             words = transcription.split()
-            if len(words) <= 1:
-                print(f"[REJECT] Audio only contains <=1 word: '{transcription}'.")
+            if len(words) <= 2:
+                print(f"[REJECT] Audio only contains <=2 words: '{transcription}'.")
                 res = {
                     'accepted': False,
                     'is_female': False,
                     'is_ai': False,
                     'status': 'rejected_fake',
-                    'reason': f"Audio only contains 1 word ('{transcription}'). Please speak a full clear sentence.",
+                    'reason': f"Audio only contains {len(words)} word(s) ('{transcription}'). Please speak a full clear sentence.",
                     'advisor_id': advisor_id,
                     'advisor_name': advisor_name,
                     'saved_kb': round(file_size_kb, 1),
