@@ -8,6 +8,11 @@ import joblib
 import os
 from pathlib import Path
 
+import threading
+
+# Limit concurrent PyTorch forward passes to prevent CPU RAM explosion (OOM)
+_inference_lock = threading.Semaphore(2)
+
 class AdvancedDeepfakeDetector:
     def __init__(self):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -38,10 +43,12 @@ class AdvancedDeepfakeDetector:
             inputs = self.feature_extractor(audio, sampling_rate=16000, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
             
-            with torch.no_grad():
-                outputs = self.wav2vec_model(**inputs)
-                # Last hidden state ka mean lete hain (global embedding)
-                embedding = outputs.last_hidden_state.mean(dim=1).cpu().numpy().flatten()
+            # Limit concurrent RAM usage
+            with _inference_lock:
+                with torch.no_grad():
+                    outputs = self.wav2vec_model(**inputs)
+                    # Last hidden state ka mean lete hain (global embedding)
+                    embedding = outputs.last_hidden_state.mean(dim=1).cpu().numpy().flatten()
             
             np.save(cache_path, embedding)
             return embedding
