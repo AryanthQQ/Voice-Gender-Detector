@@ -442,7 +442,7 @@ def predict(file: UploadFile = File(...)):
         
         # ── IMMEDIATE VOLUME CHECK ──
         max_amp = np.max(np.abs(y))
-        if max_amp < 0.20:
+        if max_amp < 0.08:
             print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f})")
             return JSONResponse(content={
                 'accepted': False,
