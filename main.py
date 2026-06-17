@@ -47,10 +47,10 @@ advanced_deepfake_detector = AdvancedDeepfakeDetector()
 
 # Initialize Speech-to-Text Model
 import torch
-from transformers import Wav2Vec2Processor, Wav2Vec2ForCTC
-print("[STT] Loading Speech-to-Text model...")
-stt_processor = Wav2Vec2Processor.from_pretrained('facebook/wav2vec2-base-960h')
-stt_model = Wav2Vec2ForCTC.from_pretrained('facebook/wav2vec2-base-960h')
+from transformers import WhisperProcessor, WhisperForConditionalGeneration
+print("[STT] Loading Speech-to-Text model (Multi-lingual Whisper)...")
+stt_processor = WhisperProcessor.from_pretrained('openai/whisper-tiny')
+stt_model = WhisperForConditionalGeneration.from_pretrained('openai/whisper-tiny')
 stt_model.eval()
 print("[STT] Speech-to-Text model loaded successfully!")
 
@@ -469,33 +469,25 @@ def predict(file: UploadFile = File(...)):
     # --- STT HUMAN AUDIBILITY CHECK ---
     try:
         stt_audio, _ = librosa.load(saved_path, sr=16000)
-        inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt', padding=True)
+        inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
         with torch.no_grad():
-            logits = stt_model(**inputs).logits
+            predicted_ids = stt_model.generate(inputs.input_features)
             
-        probs = torch.nn.functional.softmax(logits, dim=-1)
-        max_probs, predicted_ids = torch.max(probs, dim=-1)
+        avg_confidence = 0.99
         
-        # Calculate confidence only for non-blank tokens (Wav2Vec2 blank is 0)
-        valid_mask = (predicted_ids != 0)
-        if valid_mask.sum() > 0:
-            avg_confidence = max_probs[valid_mask].mean().item()
-        else:
-            avg_confidence = 0.0
-        
-        transcription = stt_processor.batch_decode(predicted_ids)[0]
+        transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
         words = transcription.split()
         meaningful_words = [w for w in words if len(w) >= 3]
-        print(f"[STT] Transcription: '{transcription}' (Confidence: {avg_confidence:.2f})")
+        print(f"[STT] Transcription: '{transcription}' (Using Whisper)")
         
-        if len(meaningful_words) < 5 or avg_confidence < 0.60:
-            print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}, Conf: {avg_confidence:.2f}")
+        if len(meaningful_words) < 5:
+            print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
             return JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': False,
                 'status': 'rejected_fake',
-                'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}, Confidence: {avg_confidence*100:.1f}%). Please speak at least 5 meaningful words loud and clear.",
+                'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}). Please speak at least 5 meaningful words in any language.",
                 'saved_as': os.path.basename(saved_path),
             })
     except Exception as e:
@@ -745,33 +737,26 @@ def predict_from_url(body: PredictUrlRequest):
         # --- STT ONE-WORD REJECT CHECK ---
         try:
             stt_audio, _ = librosa.load(tmp_path, sr=16000)
-            inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt', padding=True)
+            inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
             with torch.no_grad():
-                logits = stt_model(**inputs).logits
+                predicted_ids = stt_model.generate(inputs.input_features)
                 
-            probs = torch.nn.functional.softmax(logits, dim=-1)
-            max_probs, predicted_ids = torch.max(probs, dim=-1)
-            
-            valid_mask = (predicted_ids != 0)
-            if valid_mask.sum() > 0:
-                avg_confidence = max_probs[valid_mask].mean().item()
-            else:
-                avg_confidence = 0.0
+            avg_confidence = 0.99
 
-            transcription = stt_processor.batch_decode(predicted_ids)[0]
+            transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
             
             words = transcription.split()
             meaningful_words = [w for w in words if len(w) >= 3]
-            print(f"[STT] Transcription: '{transcription}' (Confidence: {avg_confidence:.2f})")
+            print(f"[STT] Transcription: '{transcription}' (Using Whisper)")
             
-            if len(meaningful_words) < 5 or avg_confidence < 0.60:
-                print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}, Conf: {avg_confidence:.2f}")
+            if len(meaningful_words) < 5:
+                print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
                 res = {
                     'accepted': False,
                     'is_female': False,
                     'is_ai': False,
                     'status': 'rejected_fake',
-                    'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}, Confidence: {avg_confidence*100:.1f}%). Please speak at least 5 meaningful words.",
+                    'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}). Please speak at least 5 meaningful words in any language.",
                     'advisor_id': advisor_id,
                     'advisor_name': advisor_name,
                     'saved_kb': round(file_size_kb, 1),
