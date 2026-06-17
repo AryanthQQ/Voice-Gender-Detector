@@ -484,14 +484,14 @@ def predict(file: UploadFile = File(...)):
         meaningful_words = [w for w in words if len(w) >= 3]
         print(f"[STT] Transcription: '{transcription}' (Confidence: {avg_confidence:.2f})")
         
-        if len(meaningful_words) <= 3 or avg_confidence < 0.60:
+        if len(meaningful_words) < 5 or avg_confidence < 0.60:
             print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}, Conf: {avg_confidence:.2f}")
             return JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': False,
                 'status': 'rejected_fake',
-                'reason': f"Voice is not clearly audible (Confidence: {avg_confidence*100:.1f}%). Please speak loud and clear in a quiet place.",
+                'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}, Confidence: {avg_confidence*100:.1f}%). Please speak at least 5 meaningful words loud and clear.",
                 'saved_as': os.path.basename(saved_path),
             })
     except Exception as e:
@@ -744,19 +744,30 @@ def predict_from_url(body: PredictUrlRequest):
             inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt', padding=True)
             with torch.no_grad():
                 logits = stt_model(**inputs).logits
-            predicted_ids = torch.argmax(logits, dim=-1)
+                
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+            max_probs, predicted_ids = torch.max(probs, dim=-1)
+            
+            valid_mask = (predicted_ids != 0)
+            if valid_mask.sum() > 0:
+                avg_confidence = max_probs[valid_mask].mean().item()
+            else:
+                avg_confidence = 0.0
+
             transcription = stt_processor.batch_decode(predicted_ids)[0]
             
             words = transcription.split()
             meaningful_words = [w for w in words if len(w) >= 3]
-            if len(meaningful_words) <= 3:
-                print(f"[REJECT] Audio only contains <=3 meaningful words: '{transcription}'.")
+            print(f"[STT] Transcription: '{transcription}' (Confidence: {avg_confidence:.2f})")
+            
+            if len(meaningful_words) < 5 or avg_confidence < 0.60:
+                print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}, Conf: {avg_confidence:.2f}")
                 res = {
                     'accepted': False,
                     'is_female': False,
                     'is_ai': False,
                     'status': 'rejected_fake',
-                    'reason': f"Audio only contains {len(words)} word(s) ('{transcription}'). Please speak a full clear sentence.",
+                    'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}, Confidence: {avg_confidence*100:.1f}%). Please speak at least 5 meaningful words.",
                     'advisor_id': advisor_id,
                     'advisor_name': advisor_name,
                     'saved_kb': round(file_size_kb, 1),
