@@ -375,6 +375,10 @@ def predict_gender(features: dict) -> dict:
             # Ambiguous pitch, frequency or low confidence -> send to manager
             final_label = 'manual_review'
             print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
+        elif meanfun_hz > 270.0:
+            # Exceptionally high pitch (Child or Falsetto) -> send to manager
+            final_label = 'manual_review'
+            print(f"[MANUAL REVIEW] Exceptionally high pitch (Child/Falsetto). Pitch: {meanfun_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
 
 
     male_votes = sum([svm_pred, gbm_pred, rf_pred])
