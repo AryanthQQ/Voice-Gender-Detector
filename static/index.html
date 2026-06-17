@@ -1000,6 +1000,11 @@
         const data = await res.json();
         lastData = data;
 
+        // Guard: if server explicitly rejected it (Deepfake, etc.)
+        if (data.accepted === false) {
+          throw new Error(data.reason || 'Audio rejected by server.');
+        }
+
         // Guard: if ensemble is missing for any reason
         if (!data.ensemble) {
           throw new Error(data.reason || 'Unexpected server response. Please try again.');
