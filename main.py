@@ -230,9 +230,9 @@ def extract_features(audio_path: str) -> dict:
     # 2. Silence Trimming (Shuru aur aakhir ka blank noise/shanti hatana)
     y, _ = librosa.effects.trim(y, top_db=20)
     
-    # 3. Short Audio Rejection
-    if len(y) < 16000 * 1.5:
-        raise ValueError("Voice is not clear or mostly background noise. Please record in a quiet place.")
+    # 3. Short Audio Rejection (Enforce 4 second rule)
+    if len(y) < 16000 * 4.0:
+        raise ValueError("Audio is too short. Please speak for at least 4 seconds.")
 
     # 4. Volume Normalization (Aawaaz ka level barabar karna)
     y = librosa.util.normalize(y)
