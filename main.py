@@ -785,7 +785,7 @@ def predict_from_url(body: PredictUrlRequest):
             
             n8n_result = {
                 'decision': 'reject',
-                'status': 'rejected_fake',
+                'status': 6,
                 'accepted': False,
                 'advisor_id': advisor_id,
                 'advisor_name': advisor_name,
@@ -817,7 +817,7 @@ def predict_from_url(body: PredictUrlRequest):
             print(f"[REJECT] Male voice detected for {display_name} — rejected, no Telegram sent.")
             n8n_result = {
                 'decision':     'reject',
-                'status':       'rejected_male',
+                'status':       6,
                 'accepted':     False,
                 'advisor_id':   advisor_id,
                 'advisor_name': advisor_name,
@@ -854,7 +854,7 @@ def predict_from_url(body: PredictUrlRequest):
 
         n8n_result = {
             'decision': result.get('decision', 'reject'),
-            'status': result.get('status', 'manual_review'),
+            'status': 3 if result.get('decision') == 'accept' else (1 if result.get('decision') == 'uncertain' else 6),
             'accepted': result.get('accepted', False),
             'advisor_id': advisor_id,
             'advisor_name': advisor_name,
