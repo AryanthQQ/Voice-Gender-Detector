@@ -393,6 +393,7 @@ def predict_gender(features: dict) -> dict:
             'male_votes': male_votes,
             'total_votes': 3,
         },
+        'decision': 'accept' if final_label == 'female' else ('uncertain' if final_label == 'manual_review' else 'reject'),
         'features': {
             'meanfun_hz':  round(features['meanfun'] * 1000, 1),
             'meanfreq_hz': round(features['meanfreq'] * 1000, 1),
@@ -518,6 +519,7 @@ def predict(file: UploadFile = File(...)):
             
             result['accepted'] = False
             result['status'] = 'rejected_fake'
+            result['decision'] = 'reject'
             result['reason'] = reason_str
             result['saved_as'] = os.path.basename(err_path)
             result['saved_kb'] = round(file_size_kb, 1)
@@ -783,6 +785,7 @@ def predict_from_url(body: PredictUrlRequest):
             
             result['accepted'] = False
             result['status'] = 'rejected_fake'
+            result['decision'] = 'reject'
             result['reason'] = reason_str
             result['advisor_id'] = advisor_id
             result['advisor_name'] = advisor_name
@@ -814,6 +817,7 @@ def predict_from_url(body: PredictUrlRequest):
                 'is_female':    False,
                 'is_ai':        False,
                 'status':       'rejected_male',
+                'decision':     'reject',
                 'reason':       'Male voice detected but name is female. Rejected for fake identity.' if gender_mismatch else 'Male voice detected. Only female voices are accepted.',
                 'ensemble':     result['ensemble'],
                 'svm':          result['svm'],
@@ -832,6 +836,7 @@ def predict_from_url(body: PredictUrlRequest):
 
         # ── 6. Female or Manual Review — enrich result + send Telegram ───────────────────
         result['status']               = 'manual_review' if gender_mismatch else label
+        result['decision']             = 'uncertain' if result['status'] == 'manual_review' else ('accept' if result['status'] == 'female' else 'reject')
         result['accepted']             = (result['status'] == 'female')
         result['advisor_id']           = advisor_id
         result['advisor_name']         = advisor_name
