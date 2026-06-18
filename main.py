@@ -658,14 +658,14 @@ def predict_from_url(body: PredictUrlRequest):
     if file_size_kb < 4.0:
         print(f"[REJECT] Audio file is too small ({file_size_kb:.1f} KB) for {advisor_name}.")
         res = {
+            'decision': 'reject',
+            'status': 6,
             'accepted': False,
-            'is_female': False,
-            'is_ai': False,
-            'status': 'rejected_error',
-            'reason': f"Audio file is too small ({file_size_kb:.1f} KB). Minimum 4KB required.",
             'advisor_id': advisor_id,
             'advisor_name': advisor_name,
-            'saved_kb': round(file_size_kb, 1),
+            'source_url': audio_url,
+            'is_female': False,
+            'reason': f"Audio file is too small ({file_size_kb:.1f} KB). Minimum 4KB required.",
         }
         processed_cache[audio_url] = res
         if len(processed_cache) > 1000:
@@ -697,14 +697,14 @@ def predict_from_url(body: PredictUrlRequest):
             if max_amp < 0.20:
                 print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f}) for {advisor_name}")
                 res = {
+                    'decision': 'reject',
+                    'status': 6,
                     'accepted': False,
-                    'is_female': False,
-                    'is_ai': False,
-                    'status': 'rejected_fake',
-                    'reason': "Audio volume is very low or completely silent. Please speak loudly and clearly.",
                     'advisor_id': advisor_id,
                     'advisor_name': advisor_name,
-                    'saved_kb': round(file_size_kb, 1),
+                    'source_url': audio_url,
+                    'is_female': False,
+                    'reason': "Audio volume is very low or completely silent. Please speak loudly and clearly.",
                 }
                 processed_cache[audio_url] = res
                 if len(processed_cache) > 1000:
@@ -715,14 +715,14 @@ def predict_from_url(body: PredictUrlRequest):
             if duration < 4.0:
                 print(f"[REJECT] Audio too short ({duration:.1f}s) for {advisor_name}")
                 res = {
+                    'decision': 'reject',
+                    'status': 6,
                     'accepted': False,
-                    'is_female': False,
-                    'is_ai': False,
-                    'status': 'rejected_fake',
-                    'reason': f"Audio too short ({duration:.1f}s). Please speak clearly for at least 4 seconds.",
                     'advisor_id': advisor_id,
                     'advisor_name': advisor_name,
-                    'saved_kb': round(file_size_kb, 1),
+                    'source_url': audio_url,
+                    'is_female': False,
+                    'reason': f"Audio too short ({duration:.1f}s). Please speak clearly for at least 4 seconds.",
                 }
                 processed_cache[audio_url] = res
                 if len(processed_cache) > 1000:
