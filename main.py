@@ -754,14 +754,14 @@ def predict_from_url(body: PredictUrlRequest):
             if len(meaningful_words) < 5:
                 print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
                 res = {
+                    'decision': 'reject',
+                    'status': 6,
                     'accepted': False,
-                    'is_female': False,
-                    'is_ai': False,
-                    'status': 'rejected_fake',
-                    'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}). Please speak at least 5 meaningful words in any language.",
                     'advisor_id': advisor_id,
                     'advisor_name': advisor_name,
-                    'saved_kb': round(file_size_kb, 1),
+                    'source_url': audio_url,
+                    'is_female': False,
+                    'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}). Please speak at least 5 meaningful words in any language.",
                 }
                 processed_cache[audio_url] = res
                 if len(processed_cache) > 1000:
@@ -872,26 +872,26 @@ def predict_from_url(body: PredictUrlRequest):
     except ValueError as e:
         print(f"[REJECT] Audio validation failed for {advisor_name} (ID: {advisor_id}): {e}")
         return JSONResponse(content={
+            'decision': 'reject',
+            'status': 6,
             'accepted': False,
-            'is_female': False,
-            'is_ai': False,
-            'status': 'rejected_fake',
-            'reason': str(e),
             'advisor_id': advisor_id,
             'advisor_name': advisor_name,
-            'saved_kb': round(file_size_kb, 1) if 'file_size_kb' in locals() else 0.0,
+            'source_url': audio_url,
+            'is_female': False,
+            'reason': str(e),
         })
     except Exception as e:
         print(f"[REJECT] Audio processing error for {advisor_name} (ID: {advisor_id}): {e}")
         return JSONResponse(content={
+            'decision': 'reject',
+            'status': 6,
             'accepted': False,
-            'is_female': False,
-            'is_ai': False,
-            'status': 'rejected_error',
-            'reason': f'Audio processing error: {str(e)}',
             'advisor_id': advisor_id,
             'advisor_name': advisor_name,
-            'saved_kb': round(file_size_kb, 1) if 'file_size_kb' in locals() else 0.0,
+            'source_url': audio_url,
+            'is_female': False,
+            'reason': f'Audio processing error: {str(e)}',
         })
 
     finally:
