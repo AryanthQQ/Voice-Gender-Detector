@@ -783,18 +783,21 @@ def predict_from_url(body: PredictUrlRequest):
             reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
             print(f"[REJECT] Spoof/AI Voice detected for {advisor_name}. Reason: {reason_str}")
             
-            result['accepted'] = False
-            result['status'] = 'rejected_fake'
-            result['decision'] = 'reject'
-            result['reason'] = reason_str
-            result['advisor_id'] = advisor_id
-            result['advisor_name'] = advisor_name
-            result['saved_kb'] = round(file_size_kb, 1)
+            n8n_result = {
+                'decision': 'reject',
+                'status': 'rejected_fake',
+                'accepted': False,
+                'advisor_id': advisor_id,
+                'advisor_name': advisor_name,
+                'source_url': audio_url,
+                'is_female': False,
+                'reason': reason_str
+            }
             
-            processed_cache[audio_url] = result
+            processed_cache[audio_url] = n8n_result
             if len(processed_cache) > 1000:
                 processed_cache.pop(next(iter(processed_cache)))
-            return JSONResponse(content=result)
+            return JSONResponse(content=n8n_result)
 
         label = result['ensemble']['label']
         display_name = f"{advisor_name} (ID:{advisor_id})"
@@ -812,27 +815,20 @@ def predict_from_url(body: PredictUrlRequest):
         # ── 5. REJECT male voice — no Telegram, no further action ─────────────
         if label == 'male':
             print(f"[REJECT] Male voice detected for {display_name} — rejected, no Telegram sent.")
-            res = {
-                'accepted':     False,
-                'is_female':    False,
-                'is_ai':        False,
-                'status':       'rejected_male',
+            n8n_result = {
                 'decision':     'reject',
-                'reason':       'Male voice detected but name is female. Rejected for fake identity.' if gender_mismatch else 'Male voice detected. Only female voices are accepted.',
-                'ensemble':     result['ensemble'],
-                'svm':          result['svm'],
-                'gbm':          result['gbm'],
-                'rf':           result['rf'],
+                'status':       'rejected_male',
+                'accepted':     False,
                 'advisor_id':   advisor_id,
                 'advisor_name': advisor_name,
-                'name_gender':  name_gender,
-                'gender_mismatch': gender_mismatch,
-                'saved_kb':     round(file_size_kb, 1),
+                'source_url':   audio_url,
+                'is_female':    False,
+                'reason':       'Male voice detected but name is female. Rejected for fake identity.' if gender_mismatch else 'Male voice detected. Only female voices are accepted.'
             }
-            processed_cache[audio_url] = res
+            processed_cache[audio_url] = n8n_result
             if len(processed_cache) > 1000:
                 processed_cache.pop(next(iter(processed_cache)))
-            return JSONResponse(content=res)
+            return JSONResponse(content=n8n_result)
 
         # ── 6. Female or Manual Review — enrich result + send Telegram ───────────────────
         result['status']               = 'manual_review' if gender_mismatch else label
@@ -856,11 +852,22 @@ def predict_from_url(body: PredictUrlRequest):
         )
         t.start()
 
-        processed_cache[audio_url] = result
+        n8n_result = {
+            'decision': result.get('decision', 'reject'),
+            'status': result.get('status', 'manual_review'),
+            'accepted': result.get('accepted', False),
+            'advisor_id': advisor_id,
+            'advisor_name': advisor_name,
+            'source_url': audio_url,
+            'is_female': result.get('is_female', False),
+            'reason': 'Voice processed successfully.'
+        }
+
+        processed_cache[audio_url] = n8n_result
         if len(processed_cache) > 1000:
             processed_cache.pop(next(iter(processed_cache)))
 
-        return JSONResponse(content=result)
+        return JSONResponse(content=n8n_result)
 
     except ValueError as e:
         print(f"[REJECT] Audio validation failed for {advisor_name} (ID: {advisor_id}): {e}")
