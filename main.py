@@ -366,12 +366,12 @@ def predict_gender(features: dict) -> dict:
     meanfun_hz = features['meanfun'] * 1000
     meanfreq_hz = features['meanfreq'] * 1000
     if final_label == 'female':
-        if meanfun_hz < 125.0 or meanfreq_hz < 125.0:
-            # Definitely Male range (below 125 Hz is clearly male)
+        if meanfun_hz < 130.0 or meanfreq_hz < 130.0:
+            # Definitely Male range (below 130 Hz is clearly male)
             final_label = 'male'
             final_conf = 0.999
             print(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
-        elif meanfun_hz < 155.0 or meanfreq_hz < 145.0 or (final_conf * 100) < 70.0:
+        elif meanfun_hz < 170.0 or meanfreq_hz < 160.0 or (final_conf * 100) < 85.0:
             # Ambiguous pitch, frequency or low confidence -> send to manager
             final_label = 'manual_review'
             print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
