@@ -4,17 +4,98 @@ Voice Gender Detection - FastAPI Backend
 - Extracts 20 acoustic features via librosa/soundfile
 - Runs SVM + GBM + Random Forest ensemble prediction
 - Auto-saves every recording to recordings/ folder
-- Sends Telegram notification to admin with verification result
+- Sends Email notification to admin with verification result
 """
-import imageio_ffmpeg
 import os
-import shutil
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+import imageio_ffmpeg
 import tempfile
 import threading
 import urllib.request
-import urllib.parse
-import json
 from datetime import datetime
+import soundfile as sf
+import ssl
+import logging
+from logging.handlers import RotatingFileHandler
+import uuid
+import time
+import config
+
+
+
+_base_logger = logging.getLogger("voice_gender_api")
+_base_logger.setLevel(logging.INFO)
+_base_logger.propagate = False
+formatter = logging.Formatter('%(asctime)s - [%(levelname)s] - %(message)s')
+
+info_handler = RotatingFileHandler(os.path.join(config.LOGS_DIR, "application.log"), maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+info_handler.setLevel(logging.INFO)
+info_handler.setFormatter(formatter)
+
+error_handler = RotatingFileHandler(os.path.join(config.LOGS_DIR, "error.log"), maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+error_handler.setLevel(logging.ERROR)
+error_handler.setFormatter(formatter)
+
+_base_logger.addHandler(info_handler)
+_base_logger.addHandler(error_handler)
+
+class SafeLogger:
+    def __init__(self, logger):
+        self._logger = logger
+    def info(self, msg, *args, **kwargs):
+        try: self._logger.info(msg, *args, **kwargs)
+        except Exception: pass
+    def warning(self, msg, *args, **kwargs):
+        try: self._logger.warning(msg, *args, **kwargs)
+        except Exception: pass
+    def exception(self, msg, *args, **kwargs):
+        try: self._logger.exception(msg, *args, **kwargs)
+        except Exception: pass
+
+logger = SafeLogger(_base_logger)
+
+def safe_load_audio(path, sr=16000):
+    import soundfile as sf
+    import librosa
+    import subprocess
+    import tempfile
+    import os
+    import imageio_ffmpeg
+    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+    
+    # Try soundfile first for standard wav files (fast path)
+    if path.lower().endswith(('.wav', '.flac', '.ogg')):
+        try:
+            y, orig_sr = sf.read(path, dtype='float32', always_2d=False)
+            if y.ndim > 1: y = y.mean(axis=1)
+            if orig_sr != sr: y = librosa.resample(y, orig_sr=orig_sr, target_sr=sr)
+            return y, sr
+        except Exception:
+            pass # Fallback to ffmpeg
+            
+    # Fallback to ffmpeg for mp3, webm, m4a, or corrupted files
+    fd, temp_wav = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        # Run ffmpeg to convert to 16kHz mono WAV safely
+        cmd = [ffmpeg_exe, "-y", "-i", path, "-ar", str(sr), "-ac", "1", temp_wav]
+        result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            raise ValueError(f"Corrupted or unsupported audio format.")
+        
+        y, orig_sr = sf.read(temp_wav, dtype='float32', always_2d=False)
+        return y, sr
+    finally:
+        if os.path.exists(temp_wav):
+            try:
+                os.remove(temp_wav)
+            except:
+                pass
+
+
+
 
 # Ensure ffmpeg is available for audioread
 os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
@@ -22,13 +103,15 @@ os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe
 import numpy as np
 import joblib
 import librosa
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 
 from pydantic import BaseModel
 import config
+
 from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
 
@@ -38,6 +121,13 @@ GLOBAL_PROCESS_LOCK = threading.Semaphore(2)
 
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Voice Gender Detection API", version="2.0.0")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+@app.get("/", response_class=HTMLResponse)
+def serve_index():
+    with open("static/index.html", "r", encoding="utf-8") as f:
+        return f.read()
+
 
 # Initialize name gender detector
 gender_detector = gender.Detector()
@@ -48,11 +138,11 @@ advanced_deepfake_detector = AdvancedDeepfakeDetector()
 # Initialize Speech-to-Text Model
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
-print("[STT] Loading Speech-to-Text model (Multi-lingual Whisper)...")
+logger.info("[STT] Loading Speech-to-Text model (Multi-lingual Whisper)...")
 stt_processor = WhisperProcessor.from_pretrained('openai/whisper-tiny')
 stt_model = WhisperForConditionalGeneration.from_pretrained('openai/whisper-tiny')
 stt_model.eval()
-print("[STT] Speech-to-Text model loaded successfully!")
+logger.info("[STT] Speech-to-Text model loaded successfully!")
 
 app.add_middleware(
     CORSMiddleware,
@@ -70,144 +160,204 @@ try:
     rf_model  = joblib.load(os.path.join(MODELS_DIR, 'rf_model.pkl'))
     scaler    = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
     FEATURES  = joblib.load(os.path.join(MODELS_DIR, 'features.pkl'))
-    print("[OK] All models loaded successfully!")
+    logger.info("[OK] All models loaded successfully!")
 except Exception as e:
-    print(f"[ERR] Error loading models: {e}")
+    logger.exception(f"[ERR] Error loading models: {e}")
     svm_model = gbm_model = rf_model = scaler = None
 
 # ── Recordings directory ──────────────────────────────────────────────────────
-RECORDINGS_DIR = os.path.join(os.path.dirname(__file__), config.RECORDINGS_DIR)
-os.makedirs(RECORDINGS_DIR, exist_ok=True)
-print(f"[OK] Recordings will be saved to: {RECORDINGS_DIR}")
+RECORDINGS_DIR = config.RECORDINGS_DIR
+TEMP_UPLOADS_DIR = config.TEMP_UPLOADS_DIR
+FAILED_DIR = config.FAILED_DIR
+logger.info(f"[OK] Recordings will be saved to: {RECORDINGS_DIR}")
+logger.info(f"[OK] Temp uploads will be saved to: {TEMP_UPLOADS_DIR}")
+logger.info(f"[OK] Failed recordings will be saved to: {FAILED_DIR}")
 
 # ── Simple In-Memory Cache for n8n Loop Protection ────────────────────────────
 processed_cache = {}
 
-# ── Telegram Notifier ─────────────────────────────────────────────────────────
-class TelegramNotifier:
-    """Send Telegram messages using Bot API — stdlib only, no extra packages."""
+def _add_to_cache(url: str, result_dict: dict):
+    processed_cache[url] = result_dict
+    if len(processed_cache) > 1000:
+        processed_cache.pop(next(iter(processed_cache)))
 
-    def __init__(self, token: str, chat_id: str):
-        self.token   = token
-        self.chat_id = chat_id
-        self.base    = f"https://api.telegram.org/bot{token}/sendMessage"
+# ── Email Notifier ────────────────────────────────────────────────────────────
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.audio import MIMEAudio
 
-    def send(self, text: str) -> bool:
-        """Send a message. Returns True on success."""
-        import ssl
+class EmailNotifier:
+    """Send Email messages with audio attachment using smtplib."""
+
+    def __init__(self, server, port, username, password, from_addr, to_addr):
+        self.server = server
+        self.port = port
+        self.username = username
+        self.password = password
+        self.from_addr = from_addr
+        self.to_addr = to_addr
+
+    def send(self, subject: str, html_body: str, audio_path: str = None) -> bool:
+        """Send an email. Returns True on success."""
         try:
-            # Create SSL context (bypass cert verification for Windows compat)
-            ctx = ssl.create_default_context()
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-            payload = urllib.parse.urlencode({
-                'chat_id':    self.chat_id,
-                'text':       text,
-                'parse_mode': 'HTML',
-            }).encode()
-            req = urllib.request.Request(self.base, data=payload, method='POST')
-            req.add_header('Content-Type', 'application/x-www-form-urlencoded')
-            with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
-                result = json.loads(resp.read().decode())
-                return result.get('ok', False)
+            msg = MIMEMultipart()
+            msg['From'] = self.from_addr
+            msg['To'] = self.to_addr
+            msg['Subject'] = subject
+
+            msg.attach(MIMEText(html_body, 'html'))
+
+            if audio_path and os.path.exists(audio_path):
+                with open(audio_path, 'rb') as f:
+                    audio_data = f.read()
+                audio_part = MIMEAudio(audio_data, _subtype="wav")
+                audio_part.add_header('Content-Disposition', f'attachment; filename="{os.path.basename(audio_path)}"')
+                msg.attach(audio_part)
+
+            server = smtplib.SMTP(self.server, self.port)
+            server.starttls()
+            server.login(self.username, self.password)
+            server.send_message(msg)
+            server.quit()
+            return True
         except Exception as ex:
-            print(f"[TELEGRAM] Send failed: {ex}")
+            logger.exception(f"[EMAIL] Send failed: {ex}")
             return False
 
 
 _notifier = None
-if config.telegram_configured():
-    _notifier = TelegramNotifier(config.TELEGRAM_BOT_TOKEN, config.TELEGRAM_CHAT_ID)
-    print("[OK] Telegram notifier ready.")
+if config.email_configured():
+    _notifier = EmailNotifier(
+        config.SMTP_SERVER, config.SMTP_PORT, 
+        config.SMTP_USERNAME, config.SMTP_PASSWORD, 
+        config.EMAIL_FROM, config.EMAIL_TO
+    )
+    logger.info("[OK] Email notifier ready.")
 else:
-    print("[WARN] Telegram not configured. Edit .env to add BOT_TOKEN and CHAT_ID.")
+    logger.info("[WARN] Email not configured. Edit .env to add SMTP credentials.")
 
 
-def _build_telegram_message(result: dict, filename: str, file_size_kb: float, source_url: str = None) -> str:
-    """Build a rich Telegram HTML notification message."""
+def _build_email_message(result: dict, filename: str, file_size_kb: float, source_url: str = None) -> tuple:
+    """Build a rich HTML email notification message. Returns (subject, html_body)"""
     ens    = result['ensemble']
     svm    = result['svm']
     gbm    = result['gbm']
     rf     = result['rf']
-    feats  = result['features']
     label  = ens['label']
     conf   = ens['confidence']
     votes  = ens['male_votes']
     now    = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    req_id = result.get('request_id', 'Unknown')
+    adv_id = result.get('advisor_id', 'Unknown')
+    reason = result.get('reason', 'Uncertain')
+    audio_link = source_url if source_url else '#'
 
+    # Manual Review Branch
+    if label == 'manual_review' or result.get('status') == 'manual_review':
+        subject = "⚠️ VoiceGuard Manual Review Required"
+        html_body = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+            <h2>VoiceGuard Manual Review</h2>
+            
+            <h3>Request Information</h3>
+            <ul>
+                <li><b>Request ID:</b> {req_id}</li>
+                <li><b>Advisor ID:</b> {adv_id}</li>
+                <li><b>Detection Status:</b> Manual Review</li>
+                <li><b>Confidence:</b> {conf:.1f}%</li>
+                <li><b>Detection Reason:</b> {reason}</li>
+                <li><b>Processing Time:</b> {result.get('processing_time_ms', 0):.1f} ms</li>
+                <li><b>Timestamp:</b> {now}</li>
+            </ul>
+            
+            <h3>Audio</h3>
+            <p>S3 Audio URL: <a href="{audio_link}" target="_blank">Open Recording</a></p>
+            
+            <hr style="margin-top: 20px; border: 0; border-top: 1px solid #eee;">
+            <p style="font-size: 0.9em; color: #666;">
+                This email was automatically generated by VoiceGuard AI.<br>
+                Please review this recording manually.
+            </p>
+        </body>
+        </html>
+        """
+        return subject, html_body
+
+    # Default Branch for automatic decisions (Male/Female)
     if label == 'female':
-        verdict_line = "VERDICT: <b>FEMALE VERIFIED</b>"
-        verdict_icon = "✅"
-        status_emoji = "👩"
-    elif label == 'manual_review':
-        verdict_line = "VERDICT: <b>MANUAL REVIEW NEEDED</b>"
-        verdict_icon = "⚠️"
-        status_emoji = "🧐"
+        verdict_line = "VERDICT: FEMALE VERIFIED"
+        status_emoji = "✅"
     else:
-        verdict_line = "VERDICT: <b>MALE DETECTED</b>"
-        verdict_icon = "🔵"
-        status_emoji = "👨"
+        verdict_line = "VERDICT: MALE DETECTED"
+        status_emoji = "🔵"
+
+    subject = f"{status_emoji} Voice Gender Alert: {label.upper()} ({conf:.1f}%)"
 
     female_votes = 3 - votes
     if label == 'female':
         vote_summary = f"{female_votes}/3 Female"
-    elif label == 'male':
-        vote_summary = f"{votes}/3 Male"
     else:
-        vote_summary = f"{female_votes}/3 Female (Ambiguous)"
+        vote_summary = f"{votes}/3 Male"
 
-    # Audio link line — only shown when source URL is available
-    audio_link_line = ""
-    if source_url:
-        audio_link_line = f"🔗 <b>Recording:</b> <a href=\"{source_url}\">▶️ Listen and Verify</a>\n"
+    dashboard_link = f"<p>🔗 <b>Action Required:</b> <a href=\"http://127.0.0.1:8000/static/admin.html\">Go to Admin Dashboard to Review</a></p>"
 
-    msg = (
-        f"🎙️ <b>Voice Gender Verification Alert</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"📅 <b>Time:</b> {now}\n"
-        f"🔊 <b>File:</b> <code>{filename}</code>\n"
-        f"📁 <b>Size:</b> {file_size_kb:.1f} KB\n"
-        f"{audio_link_line}"
-        f"\n"
-        f"{verdict_icon} {status_emoji} {verdict_line}\n"
-        f"<b>Confidence:</b> {conf:.1f}%\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>Model Breakdown:</b>\n"
-        f"  • AI Check:       {'🔴 Replay Attack' if 'Replay' in result.get('ai', {}).get('reason', '') else '🔴 AI/Deepfake' if result.get('ai', {}).get('is_ai') else '✅ Real Human'}\n"
-        f"  • SVM:            {svm['label'].title()} ({svm['confidence']:.0f}%)\n"
-        f"  • Gradient Boost: {gbm['label'].title()} ({gbm['confidence']:.0f}%)\n"
-        f"  • Random Forest:  {rf['label'].title()} ({rf['confidence']:.0f}%)\n"
-        f"  • Ensemble Vote:  {vote_summary}\n\n"
-        f"<b>Voice Analysis:</b>\n"
-        f"  • Avg Fundamental Freq: {feats['meanfun_hz']} Hz\n"
-        f"  • Mean Frequency:       {feats['meanfreq_hz']} Hz\n"
-        f"  • Variability (IQR):    {feats['IQR']}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"<i>Auto-verified by Voice Gender AI v2.0</i>"
-    )
-    return msg
+    html_body = f"""
+    <html><body>
+        <h2>🎙️ Voice Gender Verification Alert</h2>
+        <hr>
+        <p>📅 <b>Time:</b> {now}<br>
+        🆔 <b>Request ID:</b> {req_id}<br>
+        👤 <b>Advisor ID:</b> {adv_id}<br>
+        🔊 <b>File Name:</b> <code>{filename}</code></p>
+        {dashboard_link}
+        <h3>{status_emoji} {verdict_line}</h3>
+        <p><b>Confidence:</b> {conf:.1f}%</p>
+        <p><b>Reason:</b> {reason}</p>
+        <hr>
+        <h4>Model Breakdown:</h4>
+        <ul>
+            <li><b>AI Check:</b> {'🔴 Replay Attack' if 'Replay' in result.get('ai', {}).get('reason', '') else '🔴 AI/Deepfake' if result.get('ai', {}).get('is_ai') else '✅ Real Human'}</li>
+            <li><b>SVM:</b> {svm['label'].title()} ({svm['confidence']:.0f}%)</li>
+            <li><b>Gradient Boost:</b> {gbm['label'].title()} ({gbm['confidence']:.0f}%)</li>
+            <li><b>Random Forest:</b> {rf['label'].title()} ({rf['confidence']:.0f}%)</li>
+            <li><b>Ensemble Vote:</b> {vote_summary}</li>
+        </ul>
+        <hr>
+        <p><i>Auto-verified by Voice Gender AI v2.0</i></p>
+    </body></html>
+    """
+    return subject, html_body
 
 
-def _notify_async(result: dict, filename: str, file_size_kb: float):
-    """Send Telegram notification in background thread (non-blocking)."""
+def _notify_async(result: dict, filename: str, file_size_kb: float, saved_path: str = None):
+    """Send Email notification in background thread (non-blocking)."""
     if _notifier is None:
         return
     label = result['ensemble']['label']
-    if label == 'male':
-        return  # Do not send notifications for male voices
-    if config.NOTIFY_ON == 'female' and label not in ('female', 'manual_review'):
-        return  # Only notify for female or manual review if configured
+    if label != 'manual_review':
+        return  # Only send notifications for manual review cases
     # Extract source URL if available (from /predict-url flow)
     source_url = result.get('source_url') or None
-    msg = _build_telegram_message(result, filename, file_size_kb, source_url=source_url)
-    ok  = _notifier.send(msg)
-    print(f"[TELEGRAM] Notification {'sent' if ok else 'FAILED'} for {filename} ({label})")
+    subject, html_body = _build_email_message(result, filename, file_size_kb, source_url=source_url)
+    ok = _notifier.send(subject, html_body, audio_path=None) # Audio attachment disabled per requirement
+    logger.info(f"[EMAIL] Notification {'sent' if ok else 'FAILED'} for {filename} ({label})")
+
+
+def _dispatch_email_notification(result: dict, filename: str, file_size_kb: float, saved_path: str = None):
+    """Helper to spawn the email notification background thread."""
+    t = threading.Thread(
+        target=_notify_async,
+        args=(result, filename, file_size_kb, saved_path),
+        daemon=True
+    )
+    t.start()
 
 
 # ── Feature Extraction ────────────────────────────────────────────────────────
 def extract_features(audio_path: str) -> dict:
     """Extract 20 acoustic features matching the training dataset."""
-    import soundfile as sf
 
     try:
         y_raw, sr = sf.read(audio_path, dtype='float32', always_2d=False)
@@ -219,8 +369,8 @@ def extract_features(audio_path: str) -> dict:
         else:
             y = y_raw
     except Exception as load_err:
-        print(f"[WARN] soundfile load failed ({load_err}), trying librosa fallback...")
-        y, sr = librosa.load(audio_path, sr=16000, mono=True)
+        logger.info(f"[WARN] soundfile load failed ({load_err}), trying librosa fallback...")
+        y, sr = safe_load_audio(audio_path, sr=16000)
 
     # ── AUDIO FILTERING (IMPROVES ACCURACY) ──────────────────────────────────
     # 1. Raw Silence / Blank Noise Detection (Check BEFORE normalization)
@@ -370,18 +520,16 @@ def predict_gender(features: dict) -> dict:
             # Definitely Male range (below 130 Hz is clearly male)
             final_label = 'male'
             final_conf = 0.999
-            print(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
+            logger.info(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
         elif meanfun_hz < 170.0 or meanfreq_hz < 160.0 or (final_conf * 100) < 85.0:
             # Ambiguous pitch, frequency or low confidence -> send to manager
             final_label = 'manual_review'
-            print(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
+            logger.info(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
         elif meanfun_hz > 270.0 and meanfreq_hz < 230.0:
             # High pitch but low formants (Child or Male Falsetto) -> send to manager
             final_label = 'manual_review'
-            print(f"[MANUAL REVIEW] Falsetto/Child detected. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
+            logger.info(f"[MANUAL REVIEW] Falsetto/Child detected. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
 
-
-    male_votes = sum([svm_pred, gbm_pred, rf_pred])
 
     return {
         'svm': {'label': 'male' if svm_pred == 1 else 'female', 'confidence': float(max(svm_prob)) * 100},
@@ -409,7 +557,11 @@ async def root():
 
 
 @app.post("/predict")
-def predict(file: UploadFile = File(...)):
+async def predict(
+    request: Request,
+    file: UploadFile = File(...),
+    advisor_name: str = Form("Unknown Advisor")
+):
     """
     Upload audio → save to disk → extract features → predict gender → notify Telegram.
     """
@@ -419,6 +571,25 @@ def predict(file: UploadFile = File(...)):
     # ── 1. Read uploaded audio content ────────────────────────────────────────
     content = file.file.read()
     file_size_kb = len(content) / 1024
+
+    request_id = uuid.uuid4().hex
+
+    t_start = time.time()
+    t_stt, t_df, t_gen = 0.0, 0.0, 0.0
+    def log_req(res, err=None):
+        try:
+            import json
+            tot_ms = (time.time() - t_start) * 1000
+            try:
+                data = json.loads(res.body.decode('utf-8'))
+            except:
+                data = {}
+            dec = data.get('decision', data.get('status', 'unknown'))
+            conf = data.get('ensemble', {}).get('confidence', 0.0)
+            logger.info(f"ReqID: {request_id} | File: {file.filename} | Size: {file_size_kb:.1f}KB | Total: {tot_ms:.1f}ms | STT: {t_stt:.1f}ms | Deepfake: {t_df:.1f}ms | Gender: {t_gen:.1f}ms | Decision: {dec} | Conf: {conf} | Err: {err}")
+        except Exception:
+            pass
+        return res
 
     # ── 2. Determine file extension ───────────────────────────────────────────
     allowed = {'.wav', '.mp3', '.ogg', '.m4a', '.webm', '.flac'}
@@ -434,25 +605,23 @@ def predict(file: UploadFile = File(...)):
 
     with open(saved_path, 'wb') as f:
         f.write(content)
-        
+
     # --- AUDIO NORMALIZATION (Crucial for corrupted/re-encoded files) ---
     try:
-        import soundfile as sf
-        import librosa
-        y, sr = librosa.load(saved_path, sr=16000)
+        y, sr = safe_load_audio(saved_path, sr=16000)
         
         # ── IMMEDIATE VOLUME CHECK ──
         max_amp = np.max(np.abs(y))
         if max_amp < 0.08:
-            print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f})")
-            return JSONResponse(content={
+            logger.info(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f})")
+            return log_req(JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': False,
                 'status': 'rejected_fake',
                 'reason': "Audio volume is very low or completely silent. Please speak loudly and clearly.",
                 'saved_as': os.path.basename(saved_path),
-            })
+            }))
             
         norm_name = f"voice_{timestamp}_norm.wav"
         norm_path = os.path.join(RECORDINGS_DIR, norm_name)
@@ -463,55 +632,62 @@ def predict(file: UploadFile = File(...)):
         saved_path = norm_path
         saved_name = norm_name
     except Exception as e:
-        print(f"[WARN] Failed to normalize audio: {e}")
+        logger.exception(f"[WARN] Failed to normalize audio: {e}")
 
-    print(f"[SAVE] Recording saved: {saved_path} ({file_size_kb:.1f} KB)")
-    
+    logger.info(f"[SAVE] Recording saved: {saved_path} ({file_size_kb:.1f} KB)")
+
     # --- STT HUMAN AUDIBILITY CHECK ---
     try:
-        stt_audio, _ = librosa.load(saved_path, sr=16000)
-        inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
-        with torch.no_grad():
-            predicted_ids = stt_model.generate(inputs.input_features)
-            
-        avg_confidence = 0.99
-        
-        transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+        with GLOBAL_PROCESS_LOCK:
+            t_stt_start = time.time()
+            stt_audio, _ = safe_load_audio(saved_path, sr=16000)
+            inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
+            with torch.no_grad():
+                predicted_ids = stt_model.generate(inputs.input_features)
+
+            transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
         words = transcription.split()
         meaningful_words = [w for w in words if len(w) >= 3]
-        print(f"[STT] Transcription: '{transcription}' (Using Whisper)")
+        t_stt = (time.time() - t_stt_start) * 1000
+        logger.info(f"[STT] Transcription: '{transcription}' (Using Whisper)")
         
         if len(meaningful_words) < 5:
-            print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
-            return JSONResponse(content={
+            logger.info(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
+            return log_req(JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': False,
                 'status': 'rejected_fake',
                 'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}). Please speak at least 5 meaningful words in any language.",
                 'saved_as': os.path.basename(saved_path),
-            })
+            }))
     except Exception as e:
-        print(f"[WARN] Failed STT check for {saved_path}: {e}")
+        logger.exception(f"[WARN] Failed STT check for {saved_path}: {e}")
 
     # ── 4. Extract features + predict (use saved file directly) ──────────────
     try:
-        # Always run feature extraction first
-        features = extract_features(saved_path)
-        
-        # Check if AI or Human using the advanced ML Model
-        ai_result = advanced_deepfake_detector.predict(saved_path)
-        
-        result   = predict_gender(features)
+        with GLOBAL_PROCESS_LOCK:
+            # Always run feature extraction first
+            features = extract_features(saved_path)
+
+            # Check if AI or Human using the advanced ML Model
+            t_df_start = time.time()
+            ai_result = advanced_deepfake_detector.predict(saved_path)
+            t_df = (time.time() - t_df_start) * 1000
+
+            t_gen_start = time.time()
+            result   = predict_gender(features)
+            t_gen = (time.time() - t_gen_start) * 1000
+
         result['ai'] = ai_result
         result['ai_voice'] = ai_result.get('is_ai', False)
         if ai_result.get('status') in ['model_error', 'processing_error']:
             result['ai_error'] = ai_result.get('reason', 'Failed to load deepfake model')
-        result['telegram_configured'] = config.telegram_configured()
+        result['email_configured'] = config.email_configured()
 
         if ai_result.get('is_ai'):
             reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
-            print(f"[REJECT] Spoof/AI Voice detected. Reason: {reason_str}")
+            logger.info(f"[REJECT] Spoof/AI Voice detected. Reason: {reason_str}")
             # Keep failed recording but mark it
             err_path = saved_path.replace(ext, f'_AI_FAKE{ext}')
             try: os.rename(saved_path, err_path)
@@ -528,15 +704,10 @@ def predict(file: UploadFile = File(...)):
             result['saved_as'] = saved_name
             result['saved_kb'] = round(file_size_kb, 1)
 
-            # ── 6. Send Telegram notification (background thread) ─────────────────
-            t = threading.Thread(
-                target=_notify_async,
-                args=(result, saved_name, file_size_kb),
-                daemon=True
-            )
-            t.start()
+            # ── 6. Send Email notification (background thread) ─────────────────
+            _dispatch_email_notification(result, saved_name, file_size_kb, saved_path)
 
-        return JSONResponse(content=result)
+        return log_req(JSONResponse(content=result))
 
     except ValueError as e:
         # Keep failed recording for debugging but mark it
@@ -545,13 +716,13 @@ def predict(file: UploadFile = File(...)):
             os.rename(saved_path, err_path)
         except Exception:
             pass
-        print(f"[REJECT] Audio validation failed: {e}")
-        return JSONResponse(content={
+        logger.exception(f"[REJECT] Audio validation failed: {e}")
+        return log_req(JSONResponse(content={
             'accepted': False,
             'is_female': False,
             'reason': str(e),
             'saved_as': os.path.basename(err_path)
-        })
+        }), err=str(e))
     except Exception as e:
         # Keep failed recording for debugging but mark it
         err_path = saved_path.replace(ext, f'_FAILED{ext}')
@@ -559,22 +730,49 @@ def predict(file: UploadFile = File(...)):
             os.rename(saved_path, err_path)
         except Exception:
             pass
-        print(f"[REJECT] Audio processing error for uploaded file: {e}")
-        return JSONResponse(content={
+        logger.exception(f"[REJECT] Audio processing error for uploaded file: {e}")
+        return log_req(JSONResponse(content={
             'accepted': False,
             'is_female': False,
             'reason': f'Audio processing error: {str(e)}',
             'saved_as': os.path.basename(err_path)
-        })
+        }), err=str(e))
 
 
 @app.get("/health")
 async def health():
-    rec_count = len([f for f in os.listdir(RECORDINGS_DIR) if not f.endswith('_FAILED.wav')])
+    import psutil
+    import time
+    
+    process = psutil.Process()
+    uptime_seconds = time.time() - process.create_time()
+    
+    hours, remainder = divmod(int(uptime_seconds), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    uptime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    
+    cpu_usage = psutil.cpu_percent(interval=None)
+    ram_usage_mb = process.memory_info().rss / (1024 * 1024)
+    
+    try:
+        rec_count = len([f for f in os.listdir(RECORDINGS_DIR) if not f.endswith('_FAILED.wav')])
+    except Exception:
+        rec_count = 0
+
     return {
         "status": "ok",
+        "api_status": "online",
+        "version": app.version,
+        "uptime": uptime_str,
+        "uptime_seconds": round(uptime_seconds, 1),
+        "cpu_usage_percent": cpu_usage,
+        "ram_usage_mb": round(ram_usage_mb, 1),
         "models_loaded": svm_model is not None,
-        "telegram_configured": config.telegram_configured(),
+        "detailed_model_status": {
+            "svm_ensemble": svm_model is not None,
+            "stt_whisper": stt_model is not None,
+        },
+        "email_configured": config.email_configured(),
         "recordings_saved": rec_count,
         "recordings_dir": RECORDINGS_DIR,
     }
@@ -604,7 +802,7 @@ class PredictUrlRequest(BaseModel):
     fullname: str = "Unknown"
 
 @app.post("/predict-url")
-def predict_from_url(body: PredictUrlRequest):
+async def predict_from_url(body: PredictUrlRequest):
     """
     Automation endpoint for n8n / AWS Lambda / any webhook.
     Accepts audio URL (S3 pre-signed URL or any HTTP URL), downloads it,
@@ -635,11 +833,10 @@ def predict_from_url(body: PredictUrlRequest):
 
     # Check cache to prevent n8n infinite loops on the same recording
     if audio_url in processed_cache:
-        print(f"[CACHE] Returning cached result for {advisor_name}")
+        logger.info(f"[CACHE] Returning cached result for Advisor ID: {advisor_id}")
         return JSONResponse(content=processed_cache[audio_url])
 
     # ── 1. Download audio from URL ────────────────────────────────────────────
-    import ssl
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -655,8 +852,27 @@ def predict_from_url(body: PredictUrlRequest):
 
     file_size_kb = len(content) / 1024
 
+    request_id = uuid.uuid4().hex
+    
+    t_start = time.time()
+    t_stt, t_df, t_gen = 0.0, 0.0, 0.0
+    def log_req(res, err=None):
+        try:
+            import json
+            tot_ms = (time.time() - t_start) * 1000
+            try:
+                data = json.loads(res.body.decode('utf-8'))
+            except:
+                data = {}
+            dec = data.get('decision', data.get('status', 'unknown'))
+            conf = data.get('ensemble', {}).get('confidence', 0.0)
+            logger.info(f"ReqID: {request_id} | URL: {audio_url} | Size: {file_size_kb:.1f}KB | Total: {tot_ms:.1f}ms | STT: {t_stt:.1f}ms | Deepfake: {t_df:.1f}ms | Gender: {t_gen:.1f}ms | Decision: {dec} | Conf: {conf} | Err: {err}")
+        except Exception:
+            pass
+        return res
+
     if file_size_kb < 4.0:
-        print(f"[REJECT] Audio file is too small ({file_size_kb:.1f} KB) for {advisor_name}.")
+        logger.info(f"[REJECT] Audio file is too small ({file_size_kb:.1f} KB) for Advisor ID: {advisor_id}.")
         res = {
             'decision': 'reject',
             'status': 6,
@@ -667,10 +883,8 @@ def predict_from_url(body: PredictUrlRequest):
             'is_female': False,
             'reason': f"Audio file is too small ({file_size_kb:.1f} KB). Minimum 4KB required.",
         }
-        processed_cache[audio_url] = res
-        if len(processed_cache) > 1000:
-            processed_cache.pop(next(iter(processed_cache)))
-        return JSONResponse(content=res)
+        _add_to_cache(audio_url, res)
+        return log_req(JSONResponse(content=res))
 
     # ── 2. Determine extension ────────────────────────────────────────────────
     clean_url = audio_url.split("?")[0].lower()   # Remove query params (S3 signed URLs)
@@ -684,18 +898,16 @@ def predict_from_url(body: PredictUrlRequest):
         with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
             tmp.write(content)
             tmp_path = tmp.name
-        print(f"[URL] Downloaded {file_size_kb:.1f} KB -> temp file (no local save)")
+        logger.info(f"[URL] Downloaded {file_size_kb:.1f} KB -> temp file (no local save)")
 
         # --- AUDIO NORMALIZATION (Crucial for corrupted/re-encoded files) ---
         try:
-            import soundfile as sf
-            import librosa
-            y, sr = librosa.load(tmp_path, sr=16000)
+            y, sr = safe_load_audio(tmp_path, sr=16000)
             
             # ── IMMEDIATE VOLUME CHECK ──
             max_amp = np.max(np.abs(y))
             if max_amp < 0.20:
-                print(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f}) for {advisor_name}")
+                logger.info(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f}) for Advisor ID: {advisor_id}")
                 res = {
                     'decision': 'reject',
                     'status': 6,
@@ -706,14 +918,12 @@ def predict_from_url(body: PredictUrlRequest):
                     'is_female': False,
                     'reason': "Audio volume is very low or completely silent. Please speak loudly and clearly.",
                 }
-                processed_cache[audio_url] = res
-                if len(processed_cache) > 1000:
-                    processed_cache.pop(next(iter(processed_cache)))
-                return JSONResponse(content=res)
+                _add_to_cache(audio_url, res)
+                return log_req(JSONResponse(content=res))
                 
             duration = len(y) / sr
             if duration < 4.0:
-                print(f"[REJECT] Audio too short ({duration:.1f}s) for {advisor_name}")
+                logger.info(f"[REJECT] Audio too short ({duration:.1f}s) for Advisor ID: {advisor_id}")
                 res = {
                     'decision': 'reject',
                     'status': 6,
@@ -724,35 +934,34 @@ def predict_from_url(body: PredictUrlRequest):
                     'is_female': False,
                     'reason': f"Audio too short ({duration:.1f}s). Please speak clearly for at least 4 seconds.",
                 }
-                processed_cache[audio_url] = res
-                if len(processed_cache) > 1000:
-                    processed_cache.pop(next(iter(processed_cache)))
-                return JSONResponse(content=res)
+                _add_to_cache(audio_url, res)
+                return log_req(JSONResponse(content=res))
 
             norm_path = tmp_path + "_norm.wav"
             sf.write(norm_path, y, 16000)
             os.remove(tmp_path)
             tmp_path = norm_path
         except Exception as e:
-            print(f"[WARN] Failed to normalize audio: {e}")
+            logger.exception(f"[WARN] Failed to normalize audio: {e}")
 
         # --- STT ONE-WORD REJECT CHECK ---
         try:
-            stt_audio, _ = librosa.load(tmp_path, sr=16000)
-            inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
-            with torch.no_grad():
-                predicted_ids = stt_model.generate(inputs.input_features)
-                
-            avg_confidence = 0.99
+            with GLOBAL_PROCESS_LOCK:
+                t_stt_start = time.time()
+                stt_audio, _ = safe_load_audio(tmp_path, sr=16000)
+                inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
+                with torch.no_grad():
+                    predicted_ids = stt_model.generate(inputs.input_features)
 
-            transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
+                transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
             
             words = transcription.split()
             meaningful_words = [w for w in words if len(w) >= 3]
-            print(f"[STT] Transcription: '{transcription}' (Using Whisper)")
+            t_stt = (time.time() - t_stt_start) * 1000
+            logger.info(f"[STT] Transcription: '{transcription}' (Using Whisper)")
             
             if len(meaningful_words) < 5:
-                print(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
+                logger.info(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
                 res = {
                     'decision': 'reject',
                     'status': 6,
@@ -763,25 +972,30 @@ def predict_from_url(body: PredictUrlRequest):
                     'is_female': False,
                     'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}). Please speak at least 5 meaningful words in any language.",
                 }
-                processed_cache[audio_url] = res
-                if len(processed_cache) > 1000:
-                    processed_cache.pop(next(iter(processed_cache)))
-                return JSONResponse(content=res)
+                _add_to_cache(audio_url, res)
+                return log_req(JSONResponse(content=res))
             else:
-                print(f"[STT] Transcribed ({len(words)} words): {transcription}")
+                logger.info(f"[STT] Transcribed ({len(words)} words): {transcription}")
         except Exception as e:
-            print(f"[WARN] STT Transcription failed: {e}")
+            logger.exception(f"[WARN] STT Transcription failed: {e}")
 
         # ── 4. Extract features + predict ─────────────────────────────────────
-        ai_result = advanced_deepfake_detector.predict(tmp_path)
-        features = extract_features(tmp_path)
-        result   = predict_gender(features)
+        with GLOBAL_PROCESS_LOCK:
+            t_df_start = time.time()
+            ai_result = advanced_deepfake_detector.predict(tmp_path)
+            t_df = (time.time() - t_df_start) * 1000
+            
+            features = extract_features(tmp_path)
+
+            t_gen_start = time.time()
+            result   = predict_gender(features)
+            t_gen = (time.time() - t_gen_start) * 1000
         result['ai'] = ai_result
         result['ai_voice'] = ai_result.get('is_ai', False)
 
         if ai_result.get('is_ai'):
             reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
-            print(f"[REJECT] Spoof/AI Voice detected for {advisor_name}. Reason: {reason_str}")
+            logger.info(f"[REJECT] Spoof/AI Voice detected for Advisor ID: {advisor_id}. Reason: {reason_str}")
             
             n8n_result = {
                 'decision': 'reject',
@@ -794,10 +1008,8 @@ def predict_from_url(body: PredictUrlRequest):
                 'reason': reason_str
             }
             
-            processed_cache[audio_url] = n8n_result
-            if len(processed_cache) > 1000:
-                processed_cache.pop(next(iter(processed_cache)))
-            return JSONResponse(content=n8n_result)
+            _add_to_cache(audio_url, n8n_result)
+            return log_req(JSONResponse(content=n8n_result))
 
         label = result['ensemble']['label']
         display_name = f"{advisor_name} (ID:{advisor_id})"
@@ -812,9 +1024,9 @@ def predict_from_url(body: PredictUrlRequest):
         elif label == 'male' and name_gender in ['female', 'mostly_female']:
             gender_mismatch = True
 
-        # ── 5. REJECT male voice — no Telegram, no further action ─────────────
+        # ── 5. REJECT male voice — no Email, no further action ─────────────
         if label == 'male':
-            print(f"[REJECT] Male voice detected for {display_name} — rejected, no Telegram sent.")
+            logger.info(f"[REJECT] Male voice detected for Advisor ID: {advisor_id} - rejected, no Email sent.")
             n8n_result = {
                 'decision':     'reject',
                 'status':       6,
@@ -825,15 +1037,14 @@ def predict_from_url(body: PredictUrlRequest):
                 'is_female':    False,
                 'reason':       'Male voice detected but name is female. Rejected for fake identity.' if gender_mismatch else 'Male voice detected. Only female voices are accepted.'
             }
-            processed_cache[audio_url] = n8n_result
-            if len(processed_cache) > 1000:
-                processed_cache.pop(next(iter(processed_cache)))
-            return JSONResponse(content=n8n_result)
+            _add_to_cache(audio_url, n8n_result)
+            return log_req(JSONResponse(content=n8n_result))
 
         # ── 6. Female or Manual Review — enrich result + send Telegram ───────────────────
         result['status']               = 'manual_review' if gender_mismatch else label
         result['decision']             = 'uncertain' if result['status'] == 'manual_review' else ('accept' if result['status'] == 'female' else 'reject')
         result['accepted']             = (result['status'] == 'female')
+        result['request_id']           = request_id
         result['advisor_id']           = advisor_id
         result['advisor_name']         = advisor_name
         result['name_gender']          = name_gender
@@ -841,16 +1052,11 @@ def predict_from_url(body: PredictUrlRequest):
         result['source_url']           = audio_url      # original FriendshipHub URL
         result['saved_kb']             = round(file_size_kb, 1)
         result['is_female']            = True
-        result['telegram_configured']  = config.telegram_configured()
+        result['email_configured']     = config.email_configured()
         result['ai_voice']             = ai_result.get('is_ai', False)
 
-        # ── 7. Telegram notification (background) ─────────────────────────────
-        t = threading.Thread(
-            target=_notify_async,
-            args=(result, display_name, file_size_kb),
-            daemon=True
-        )
-        t.start()
+        # ── 7. Email notification (background) ─────────────────────────────
+        _dispatch_email_notification(result, display_name, file_size_kb, tmp_path)
 
         n8n_result = {
             'decision': result.get('decision', 'reject'),
@@ -863,15 +1069,13 @@ def predict_from_url(body: PredictUrlRequest):
             'reason': 'Voice processed successfully.'
         }
 
-        processed_cache[audio_url] = n8n_result
-        if len(processed_cache) > 1000:
-            processed_cache.pop(next(iter(processed_cache)))
+        _add_to_cache(audio_url, n8n_result)
 
-        return JSONResponse(content=n8n_result)
+        return log_req(JSONResponse(content=n8n_result))
 
     except ValueError as e:
-        print(f"[REJECT] Audio validation failed for {advisor_name} (ID: {advisor_id}): {e}")
-        return JSONResponse(content={
+        logger.exception(f"[REJECT] Audio validation failed for Advisor ID: {advisor_id}: {e}")
+        return log_req(JSONResponse(content={
             'decision': 'reject',
             'status': 6,
             'accepted': False,
@@ -880,10 +1084,10 @@ def predict_from_url(body: PredictUrlRequest):
             'source_url': audio_url,
             'is_female': False,
             'reason': str(e),
-        })
+        }), err=str(e))
     except Exception as e:
-        print(f"[REJECT] Audio processing error for {advisor_name} (ID: {advisor_id}): {e}")
-        return JSONResponse(content={
+        logger.exception(f"[REJECT] Audio processing error for Advisor ID: {advisor_id}: {e}")
+        return log_req(JSONResponse(content={
             'decision': 'reject',
             'status': 6,
             'accepted': False,
@@ -892,17 +1096,90 @@ def predict_from_url(body: PredictUrlRequest):
             'source_url': audio_url,
             'is_female': False,
             'reason': f'Audio processing error: {str(e)}',
-        })
+        }), err=str(e))
 
     finally:
         # Always clean up temp file
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.unlink(tmp_path)
-                print(f"[URL] Temp file cleaned up: {tmp_path}")
+                logger.info(f"[URL] Temp file cleaned up: {tmp_path}")
             except Exception:
                 pass
 
+
+@app.get("/api/admin/metrics")
+async def admin_metrics():
+    import os, re
+    log_path = os.path.join(config.LOGS_DIR, "application.log")
+    total = 0
+    accepted = 0
+    rejected = 0
+    total_ms = 0.0
+    
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if "[INFO] - ReqID:" in line:
+                        total += 1
+                        if "Decision: accept" in line:
+                            accepted += 1
+                        elif "Decision: reject" in line:
+                            rejected += 1
+                        
+                        match = re.search(r"Total: (\d+\.\d+)ms", line)
+                        if match:
+                            total_ms += float(match.group(1))
+        except Exception:
+            pass
+            
+    avg_latency = (total_ms / total) if total > 0 else 0.0
+    
+    return {
+        "total_requests": total,
+        "accepted": accepted,
+        "rejected": rejected,
+        "avg_latency_ms": round(avg_latency, 1)
+    }
+
+@app.get("/api/admin/recent-events")
+async def admin_recent_events():
+    import os, re
+    log_path = os.path.join(config.LOGS_DIR, "application.log")
+    events = []
+    
+    if os.path.exists(log_path):
+        try:
+            with open(log_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+                for line in reversed(lines):
+                    if "[INFO] - ReqID:" in line:
+                        ts_match = re.search(r"^([\d\-]+\s[\d:]+)", line)
+                        ts = ts_match.group(1) if ts_match else "Unknown"
+                        
+                        req_match = re.search(r"ReqID: ([a-zA-Z0-9\-]+)", line)
+                        req_id = req_match.group(1) if req_match else "Unknown"
+                        
+                        dec_match = re.search(r"Decision: ([a-zA-Z]+)", line)
+                        dec = dec_match.group(1) if dec_match else "Unknown"
+                        
+                        lat_match = re.search(r"Total: ([\d\.]+)ms", line)
+                        lat = f"{lat_match.group(1)}ms" if lat_match else "Unknown"
+                        
+                        events.append({
+                            "timestamp": ts,
+                            "request_id": req_id,
+                            "decision": dec,
+                            "latency": lat,
+                            "status": "Accepted" if dec == "accept" else "Rejected"
+                        })
+                        if len(events) >= 50:
+                            break
+        except Exception:
+            pass
+            
+    return {"events": events}
 
 # Mount static files
 app.mount("/static", StaticFiles(directory="static"), name="static")

@@ -24,22 +24,50 @@ _cfg = _load_env()
 for _k, _v in _cfg.items():
     os.environ.setdefault(_k, _v)
 
-# Telegram Config (Optional)
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# SMTP Email Config (Optional)
+SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+SMTP_USERNAME = os.environ.get("SMTP_USERNAME")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
+EMAIL_FROM = os.environ.get("EMAIL_FROM", SMTP_USERNAME)
+EMAIL_TO = os.environ.get("EMAIL_TO")
 
-# Recordings directory (relative to main.py location)
-RECORDINGS_DIR: str = _cfg.get('RECORDINGS_DIR', 'recordings')
+
 
 # When to notify: 'all' = every upload, 'female' = only female detections
 NOTIFY_ON: str = _cfg.get('NOTIFY_ON', 'all')
 
-def telegram_configured() -> bool:
-    """Returns True if Telegram credentials are set and not placeholder."""
+def email_configured() -> bool:
+    """Returns True if Email credentials are set and not placeholder."""
     return (
-        bool(TELEGRAM_BOT_TOKEN)
-        and TELEGRAM_BOT_TOKEN != 'YOUR_BOT_TOKEN_HERE'
-        and bool(TELEGRAM_CHAT_ID)
-        and TELEGRAM_CHAT_ID != 'YOUR_CHAT_ID_HERE'
+        bool(SMTP_USERNAME)
+        and SMTP_USERNAME != 'YOUR_EMAIL@gmail.com'
+        and bool(SMTP_PASSWORD)
+        and SMTP_PASSWORD != 'YOUR_APP_PASSWORD'
+        and bool(EMAIL_TO)
     )
 
+
+import platform
+
+# Base Storage Directory
+# Windows defaults to ./data, Linux defaults to /data/voiceguard
+_os_name = platform.system().lower()
+_default_base = "./data" if _os_name == "windows" else "/data/voiceguard"
+
+STORAGE_BASE = os.environ.get("STORAGE_BASE", _default_base)
+
+RECORDINGS_DIR = os.environ.get("RECORDINGS_DIR", os.path.join(STORAGE_BASE, "recordings"))
+TEMP_UPLOADS_DIR = os.environ.get("TEMP_UPLOADS_DIR", os.path.join(STORAGE_BASE, "uploads"))
+LOGS_DIR = os.environ.get("LOGS_DIR", os.path.join(STORAGE_BASE, "logs"))
+DATASET_DIR = os.environ.get("DATASET_DIR", os.path.join(STORAGE_BASE, "dataset"))
+FAILED_DIR = os.environ.get("FAILED_DIR", os.path.join(STORAGE_BASE, "failed"))
+MANUAL_REVIEW_DIR = os.environ.get("MANUAL_REVIEW_DIR", os.path.join(STORAGE_BASE, "manual_review"))
+BACKUPS_DIR = os.environ.get("BACKUPS_DIR", os.path.join(STORAGE_BASE, "backups"))
+
+# Auto-create all directories safely
+for _dir in [RECORDINGS_DIR, TEMP_UPLOADS_DIR, LOGS_DIR, DATASET_DIR, FAILED_DIR, MANUAL_REVIEW_DIR, BACKUPS_DIR]:
+    try:
+        os.makedirs(_dir, exist_ok=True)
+    except Exception as e:
+        print(f"[WARN] Could not create directory {_dir}: {e}")

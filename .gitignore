@@ -71,3 +71,6 @@ data/
 recordings/
 *.exe
 *.tar.gz
+
+# ── Scratch / temporary dev scripts ─────────────────────────────────────────
+scratch/
