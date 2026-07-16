@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard - Voice AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f111a;
+      --surface: #161925;
+      --surface-hover: #1e2232;
+      --surface-border: rgba(255, 255, 255, 0.08);
+      --primary: #6366f1;
+      --primary-hover: #4f46e5;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      
+      --sidebar-width: 260px;
+      --header-height: 70px;
+      --transition: all 0.3s ease;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    aside {
+      width: var(--sidebar-width);
+      background-color: var(--surface);
+      border-right: 1px solid var(--surface-border);
+      display: flex;
+      flex-direction: column;
+      transition: var(--transition);
+      z-index: 50;
+    }
+
+    .brand {
+      height: var(--header-height);
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      color: var(--text);
+      border-bottom: 1px solid var(--surface-border);
+    }
+    
+    .brand span { color: var(--primary); margin-left: 4px; }
+
+    .nav-menu {
+      padding: 24px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .nav-item {
+      display: flex;
+      align-items: center;
+      padding: 12px 16px;
+      color: var(--text-muted);
+      text-decoration: none;
+      border-radius: 8px;
+      font-weight: 500;
+      transition: var(--transition);
+      cursor: pointer;
+    }
+
+    .nav-item:hover, .nav-item.active {
+      background-color: var(--surface-hover);
+      color: var(--text);
+    }
+    .nav-item.active {
+      background-color: rgba(99, 102, 241, 0.1);
+      color: var(--primary);
+    }
+
+    /* Main Content */
+    main {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Header */
+    header {
+      height: var(--header-height);
+      background-color: var(--bg);
+      border-bottom: 1px solid var(--surface-border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+    }
+
+    .search-bar {
+      display: flex;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 8px;
+      padding: 8px 16px;
+      width: 300px;
+    }
+    .search-bar input {
+      background: transparent;
+      border: none;
+      color: var(--text);
+      outline: none;
+      width: 100%;
+      font-family: inherit;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    
+    .avatar {
+      width: 36px; height: 36px;
+      border-radius: 50%;
+      background: var(--primary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    /* Dashboard Layout */
+    .dashboard-content {
+      flex: 1;
+      padding: 32px;
+      overflow-y: auto;
+    }
+    
+    .page-title {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 24px;
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 16px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      position: relative;
+      overflow: hidden;
+    }
+    .metric-card::before {
+      content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 4px;
+      background: var(--primary);
+    }
+    .metric-card.success::before { background: var(--success); }
+    .metric-card.danger::before { background: var(--danger); }
+    
+    .metric-title { font-size: 0.875rem; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+    .metric-value { font-size: 2rem; font-weight: 700; color: var(--text); }
+    .metric-trend { font-size: 0.875rem; color: var(--success); display: flex; align-items: center; gap: 4px; }
+    .metric-trend.negative { color: var(--danger); }
+
+    .charts-grid {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 24px;
+      margin-bottom: 32px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--surface-border);
+      border-radius: 16px;
+      padding: 24px;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+    }
+    .panel-title { font-size: 1.125rem; font-weight: 600; }
+    
+    /* Placeholder Chart SVG */
+    .chart-placeholder {
+      width: 100%;
+      height: 250px;
+      background: rgba(255,255,255,0.02);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Data Table */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      text-align: left;
+    }
+    .data-table th {
+      padding: 12px 16px;
+      color: var(--text-muted);
+      font-weight: 500;
+      font-size: 0.875rem;
+      border-bottom: 1px solid var(--surface-border);
+    }
+    .data-table td {
+      padding: 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.04);
+      font-size: 0.875rem;
+    }
+    .status-badge {
+      padding: 4px 10px;
+      border-radius: 100px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .status-badge.accept { background: rgba(16, 185, 129, 0.1); color: var(--success); border: 1px solid rgba(16,185,129,0.2); }
+    .status-badge.reject { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239,68,68,0.2); }
+
+    /* Mobile Hamburger */
+    .hamburger { display: none; background: transparent; border: none; color: var(--text); font-size: 24px; cursor: pointer; }
+
+    /* Responsive */
+    @media (max-width: 1024px) {
+      .charts-grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 768px) {
+      aside { position: fixed; left: -100%; height: 100%; }
+      aside.open { left: 0; }
+      .hamburger { display: block; }
+      .search-bar { display: none; }
+      header { padding: 0 16px; }
+      .dashboard-content { padding: 16px; }
+    }
+    .d-none { display: none !important; }
+  </style>
+</head>
+<body>
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="brand">
+      Voice<span>AI</span>
+    </div>
+    <div class="nav-menu">
+      <a class="nav-item active">Dashboard</a>
+      <a class="nav-item">Analytics</a>
+      <a class="nav-item">Recordings</a>
+      <a class="nav-item">API Logs</a>
+      <a style="flex: 1"></a>
+      <a class="nav-item">Settings</a>
+    </div>
+  </aside>
+
+  <!-- Main Area -->
+  <main>
+    <!-- Header -->
+    <header>
+      <button class="hamburger" id="hamburger">☰</button>
+      <div class="search-bar">
+        <input type="text" placeholder="Search Request ID or Filename...">
+      </div>
+      <div class="header-actions">
+        <div style="color: var(--text-muted); cursor: pointer;">🔔</div>
+        <div class="avatar">AD</div>
+      </div>
+    </header>
+
+    <!-- Content -->
+    <div class="dashboard-content">
+      <h1 class="page-title">Overview <span id="sync-status" style="font-size: 12px; color: var(--success); margin-left: 12px; font-weight: 400;">● Live</span></h1>
+
+      <!-- Metrics -->
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-title">Total Requests</div>
+          <div class="metric-value" id="val-total">-</div>
+          <div class="metric-trend" id="trend-total">Real-time</div>
+        </div>
+        <div class="metric-card success">
+          <div class="metric-title">Accepted</div>
+          <div class="metric-value" id="val-accept">-</div>
+          <div class="metric-trend" id="trend-accept">Real-time</div>
+        </div>
+        <div class="metric-card danger">
+          <div class="metric-title">Rejected</div>
+          <div class="metric-value" id="val-reject">-</div>
+          <div class="metric-trend negative" id="trend-reject">Real-time</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-title">Avg Latency</div>
+          <div class="metric-value" id="val-latency">-</div>
+          <div class="metric-trend" id="trend-latency">Real-time</div>
+        </div>
+      </div>
+
+      <!-- Charts -->
+      <div class="charts-grid">
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">Processing Volume</div>
+          </div>
+          <div class="chart-placeholder">
+            <!-- Pure CSS/SVG Placeholder Chart -->
+            <svg width="100%" height="100%" viewBox="0 0 500 150" preserveAspectRatio="none">
+              <path d="M0,150 L0,100 C50,110 100,20 150,50 C200,80 250,10 300,40 C350,70 400,120 450,90 C480,70 500,110 500,110 L500,150 Z" fill="rgba(99, 102, 241, 0.1)"></path>
+              <path d="M0,100 C50,110 100,20 150,50 C200,80 250,10 300,40 C350,70 400,120 450,90 C480,70 500,110 500,110" fill="none" stroke="#6366f1" stroke-width="3"></path>
+            </svg>
+            <div style="position: absolute; color: var(--text-muted); font-size: 14px;">[Chart Implementation Pending]</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-header">
+            <div class="panel-title">System Status</div>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 16px;">
+            <div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px;">
+                <span style="color: var(--text-muted)">CPU Usage</span>
+                <span id="sys-cpu">-</span>
+              </div>
+              <div style="width: 100%; height: 6px; background: var(--surface-hover); border-radius: 10px; overflow: hidden;">
+                <div id="bar-cpu" style="width: 0%; height: 100%; background: var(--primary); transition: width 0.5s;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px;">
+                <span style="color: var(--text-muted)">RAM Usage</span>
+                <span id="sys-ram">-</span>
+              </div>
+              <div style="width: 100%; height: 6px; background: var(--surface-hover); border-radius: 10px; overflow: hidden;">
+                <div id="bar-ram" style="width: 0%; height: 100%; background: var(--warning); transition: width 0.5s;"></div>
+              </div>
+            </div>
+            <div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 14px;">
+                <span style="color: var(--text-muted)">API Uptime</span>
+                <span id="sys-uptime" style="color: var(--success)">-</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Data Table -->
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Recent Requests</div>
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Request ID</th>
+                <th>Latency</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="events-body">
+              <tr><td colspan="4" style="text-align: center; color: var(--text-muted);">Loading events...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div> <!-- End Dashboard Section -->
+    </main>
+
+  <script>
+    // Vanilla JS for Mobile Sidebar Toggle
+    const hamburger = document.getElementById('hamburger');
+    const sidebar = document.getElementById('sidebar');
+
+    hamburger.addEventListener('click', () => {
+      sidebar.classList.toggle('open');
+    });
+
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', (e) => {
+      if (window.innerWidth <= 768) {
+        if (!sidebar.contains(e.target) && e.target !== hamburger) {
+          sidebar.classList.remove('open');
+        }
+      }
+    });
+
+    // Fetch Backend Data
+    async function fetchDashboardData() {
+        try {
+            // Fetch Metrics
+            const metricsRes = await fetch('/api/admin/metrics');
+            if (metricsRes.ok) {
+                const data = await metricsRes.json();
+                document.getElementById('val-total').textContent = data.total_requests;
+                document.getElementById('val-accept').textContent = data.accepted;
+                document.getElementById('val-reject').textContent = data.rejected;
+                document.getElementById('val-latency').textContent = data.avg_latency_ms + 'ms';
+            }
+
+            // Fetch Health
+            const healthRes = await fetch('/health');
+            if (healthRes.ok) {
+                const data = await healthRes.json();
+                document.getElementById('sys-cpu').textContent = data.cpu_usage_percent + '%';
+                document.getElementById('bar-cpu').style.width = Math.min(data.cpu_usage_percent, 100) + '%';
+                
+                document.getElementById('sys-ram').textContent = data.ram_usage_mb + ' MB';
+                // Assuming 4GB max for bar visual
+                const ramPercent = Math.min((data.ram_usage_mb / 4096) * 100, 100);
+                document.getElementById('bar-ram').style.width = ramPercent + '%';
+                
+                document.getElementById('sys-uptime').textContent = data.uptime;
+            }
+
+            // Fetch Recent Events
+            const eventsRes = await fetch('/api/admin/recent-events');
+            if (eventsRes.ok) {
+                const data = await eventsRes.json();
+                const tbody = document.getElementById('events-body');
+                tbody.innerHTML = '';
+                if (data.events && data.events.length > 0) {
+                    data.events.forEach(ev => {
+                        const tr = document.createElement('tr');
+                        const statusClass = ev.status === 'Accepted' ? 'accept' : 'reject';
+                        tr.innerHTML = `
+                            <td style="color: var(--text-muted);">${ev.timestamp}</td>
+                            <td style="font-family: monospace; color: var(--text);">${ev.request_id}</td>
+                            <td>${ev.latency}</td>
+                            <td><span class="status-badge ${statusClass}">${ev.status}</span></td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                } else {
+                    tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-muted);">No recent events found.</td></tr>';
+                }
+            }
+        } catch (e) {
+            console.error("Dashboard Sync Error:", e);
+        }
+    }
+
+    // Initial fetch and 5s polling
+    fetchDashboardData();
+    setInterval(fetchDashboardData, 5000);
+  </script>
+
+  <!-- Review Modal -->
+  <div id="review-modal" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 100; align-items: center; justify-content: center;">
+    <div style="background: var(--surface); padding: 32px; border-radius: 12px; width: 500px; max-width: 90%; border: 1px solid var(--surface-border);">
+      <h3 style="margin-bottom: 20px;">Review Request</h3>
+      <p><b>Advisor ID:</b> <span id="modal-advisor"></span></p>
+      <p><b>Request ID:</b> <span id="modal-request"></span></p>
+      <p><b>Confidence:</b> <span id="modal-conf"></span></p>
+      <p><b>Reason:</b> <span id="modal-reason"></span></p>
+      
+      <div style="margin: 20px 0;">
+        <audio id="modal-audio" controls style="width: 100%;"></audio>
+      </div>
+
+      <div style="margin-bottom: 20px;">
+        <label style="display: block; margin-bottom: 8px;">Reviewer Comment (Optional):</label>
+        <textarea id="modal-comment" rows="3" style="width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--surface-border); border-radius: 6px; padding: 8px;"></textarea>
+      </div>
+      
+      <div style="display: flex; gap: 12px; justify-content: flex-end;">
+        <button onclick="closeModal()" style="padding: 8px 16px; background: transparent; border: 1px solid var(--text-muted); color: var(--text); border-radius: 6px; cursor: pointer;">Cancel</button>
+        <button onclick="submitReview('reject')" style="padding: 8px 16px; background: var(--danger); border: none; color: white; border-radius: 6px; cursor: pointer;">Reject</button>
+        <button onclick="submitReview('approve')" style="padding: 8px 16px; background: var(--success); border: none; color: white; border-radius: 6px; cursor: pointer;">Approve</button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

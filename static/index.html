@@ -990,7 +990,7 @@
           btn.innerHTML = '<span class="spinner"></span> Analyzing...';
         }
 
-        const res = await fetch('http://127.0.0.1:8000/predict', { method: 'POST', body: formData });
+        const res = await fetch('/predict', { method: 'POST', body: formData });
 
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
