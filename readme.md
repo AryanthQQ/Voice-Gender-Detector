@@ -100,3 +100,88 @@ This project is licensed under the MIT License. See the LICENSE file for details
 ## Acknowledgements
 * Special thanks to the developers of the [Wav2Vec2](https://huggingface.co/facebook/wav2vec2-base) model and the contributors to the datasets used in this project.
 * View the complete project on [GitHub](https://github.com/Mrkomiljon/VoiceGUARD2)
+
+---
+
+## Deploying the API on Ubuntu (systemd)
+
+This runs the FastAPI app (`main.py`) as a managed `systemd` service. Target layout:
+app + venv under `/opt/voiceguard`, persistent data (recordings, logs, model
+caches) under `/data/voiceguard`, running as a dedicated `voiceguard` user.
+
+### 1. System prerequisites
+
+```bash
+sudo apt update
+sudo apt install -y python3.11 python3.11-venv git
+```
+
+`ffmpeg` is **not** required as a system package — `imageio-ffmpeg` downloads
+its own static binary the first time audio needs it. Install `ffmpeg` via
+apt yourself only if you'd rather avoid that runtime download.
+
+### 2. Create the service user and directories
+
+```bash
+sudo useradd --system --home /opt/voiceguard --shell /usr/sbin/nologin voiceguard
+sudo mkdir -p /opt/voiceguard /data/voiceguard
+sudo chown -R voiceguard:voiceguard /opt/voiceguard /data/voiceguard
+```
+
+### 3. Deploy the code
+
+```bash
+sudo -u voiceguard git clone https://github.com/AryanthQQ/Voice-Gender-Detector.git /opt/voiceguard
+cd /opt/voiceguard
+sudo -u voiceguard python3.11 -m venv venv
+sudo -u voiceguard ./venv/bin/pip install -r requirements.txt
+```
+
+### 4. Configure
+
+```bash
+sudo -u voiceguard cp .env.example .env
+sudo -u voiceguard nano .env
+```
+
+Fill in at least:
+- `API_KEY` — generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`
+- `STORAGE_BASE=/data/voiceguard`
+- `PUBLIC_BASE_URL` — your real domain (e.g. `https://voiceguard.yourapp.com`), used in manual-review email alert links
+- `SMTP_*` / `EMAIL_TO` — only if you want manual-review email notifications
+
+### 5. Install and start the systemd service
+
+```bash
+sudo cp deploy/voiceguard.service /etc/systemd/system/voiceguard.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now voiceguard
+```
+
+### 6. Verify
+
+```bash
+sudo systemctl status voiceguard
+journalctl -u voiceguard -f   # first start downloads the Whisper/Wav2Vec2 models — can take a few minutes
+curl http://127.0.0.1:8000/health
+```
+
+### 7. Expose it
+
+The app binds plain HTTP on `0.0.0.0:8000` with no TLS. Put nginx or caddy in
+front for HTTPS on your real domain — that's also what `PUBLIC_BASE_URL`
+should point at. Only open port 8000 directly in the firewall if you're not
+reverse-proxying:
+
+```bash
+sudo ufw allow 8000/tcp
+```
+
+### Updating
+
+```bash
+cd /opt/voiceguard
+sudo -u voiceguard git pull
+sudo -u voiceguard ./venv/bin/pip install -r requirements.txt
+sudo systemctl restart voiceguard
+```

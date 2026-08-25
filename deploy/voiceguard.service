@@ -24,6 +24,12 @@ User=voiceguard
 Group=voiceguard
 WorkingDirectory=/opt/voiceguard
 EnvironmentFile=/opt/voiceguard/.env
+# Redirect HuggingFace/torch/numba caches into /data/voiceguard instead of
+# /opt/voiceguard, which ProtectSystem=strict below makes read-only. Without
+# this, the first-run download of the Whisper/Wav2Vec2 models fails.
+Environment=HF_HOME=/data/voiceguard/hf-cache
+Environment=TORCH_HOME=/data/voiceguard/torch-cache
+Environment=NUMBA_CACHE_DIR=/data/voiceguard/numba-cache
 ExecStart=/opt/voiceguard/venv/bin/python /opt/voiceguard/main.py
 Restart=on-failure
 RestartSec=5
