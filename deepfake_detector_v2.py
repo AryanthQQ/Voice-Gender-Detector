@@ -9,9 +9,13 @@ import os
 from pathlib import Path
 
 import threading
+import config
 
-# Limit concurrent PyTorch forward passes to prevent CPU RAM explosion (OOM)
-_inference_lock = threading.Semaphore(2)
+# Limit concurrent PyTorch forward passes to prevent RAM/VRAM exhaustion.
+# Tied to the same MAX_CONCURRENT_JOBS knob as the outer request-level lock in
+# main.py, so raising that for a GPU deployment doesn't leave this as a
+# leftover, tighter bottleneck.
+_inference_lock = threading.Semaphore(config.MAX_CONCURRENT_JOBS)
 
 class AdvancedDeepfakeDetector:
     def __init__(self):

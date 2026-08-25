@@ -153,9 +153,10 @@ advanced_deepfake_detector = AdvancedDeepfakeDetector()
 # Initialize Speech-to-Text Model
 import torch
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
-logger.info("[STT] Loading Speech-to-Text model (Multi-lingual Whisper)...")
+STT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+logger.info(f"[STT] Loading Speech-to-Text model (Multi-lingual Whisper) on {STT_DEVICE}...")
 stt_processor = WhisperProcessor.from_pretrained('openai/whisper-tiny')
-stt_model = WhisperForConditionalGeneration.from_pretrained('openai/whisper-tiny')
+stt_model = WhisperForConditionalGeneration.from_pretrained('openai/whisper-tiny').to(STT_DEVICE)
 stt_model.eval()
 logger.info("[STT] Speech-to-Text model loaded successfully!")
 
@@ -773,7 +774,7 @@ def _predict_sync(content: bytes, filename: str, advisor_name: str) -> JSONRespo
         with GLOBAL_PROCESS_LOCK:
             t_stt_start = time.time()
             stt_audio, _ = safe_load_audio(saved_path, sr=16000)
-            inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
+            inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt').to(STT_DEVICE)
             with torch.no_grad():
                 # no_repeat_ngram_size/repetition_penalty guard against Whisper's known repetition-loop
                 # degeneration on ambiguous audio (it can otherwise repeat a phrase for hundreds of
@@ -1111,7 +1112,7 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
             with GLOBAL_PROCESS_LOCK:
                 t_stt_start = time.time()
                 stt_audio, _ = safe_load_audio(tmp_path, sr=16000)
-                inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
+                inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt').to(STT_DEVICE)
                 with torch.no_grad():
                     predicted_ids = stt_model.generate(
                         inputs.input_features,

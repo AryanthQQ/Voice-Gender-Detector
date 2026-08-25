@@ -16,16 +16,21 @@ _processor = None
 _model = None
 
 
+_device = None
+
+
 def _ensure_loaded():
-    global _processor, _model
+    global _processor, _model, _device
     if _model is not None:
         return
     with _load_lock:
         if _model is not None:
             return
+        import torch
         from transformers import AutoFeatureExtractor, AutoModelForAudioClassification
+        _device = "cuda" if torch.cuda.is_available() else "cpu"
         processor = AutoFeatureExtractor.from_pretrained(MODEL_NAME)
-        model = AutoModelForAudioClassification.from_pretrained(MODEL_NAME)
+        model = AutoModelForAudioClassification.from_pretrained(MODEL_NAME).to(_device)
         model.eval()
         _processor, _model = processor, model
 
@@ -37,7 +42,7 @@ def verify_female(audio_path: str) -> dict:
 
     _ensure_loaded()
     audio, _ = librosa.load(audio_path, sr=16000)
-    inputs = _processor(audio, sampling_rate=16000, return_tensors="pt")
+    inputs = _processor(audio, sampling_rate=16000, return_tensors="pt").to(_device)
     with torch.no_grad():
         logits = _model(**inputs).logits
         probs = torch.softmax(logits, dim=-1)[0]

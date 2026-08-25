@@ -137,6 +137,22 @@ sudo -u voiceguard python3.11 -m venv venv
 sudo -u voiceguard ./venv/bin/pip install -r requirements.txt
 ```
 
+**On a GPU box:** `pip install torch` from `requirements.txt` can silently give
+you a CPU-only wheel. Install the CUDA build for your driver *first* (check
+with `nvidia-smi`), then install the rest:
+
+```bash
+sudo -u voiceguard ./venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu121
+sudo -u voiceguard ./venv/bin/pip install -r requirements.txt
+sudo -u voiceguard ./venv/bin/python -c "import torch; print(torch.cuda.is_available())"   # must print True
+```
+
+The Whisper STT model, the deepfake detector, and the secondary gender
+verifier all auto-select CUDA when `torch.cuda.is_available()` — no config
+needed beyond having a working GPU torch install. Once confirmed, raise
+`MAX_CONCURRENT_JOBS` in `.env` (start at 8-16 and load-test) — see the
+comment in `.env.example`.
+
 ### 4. Configure
 
 ```bash
