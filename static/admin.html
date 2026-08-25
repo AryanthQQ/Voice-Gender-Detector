@@ -252,6 +252,31 @@
     /* Mobile Hamburger */
     .hamburger { display: none; background: transparent; border: none; color: var(--text); font-size: 24px; cursor: pointer; }
 
+    /* Authorize button (top-left, under brand) */
+    .authorize-btn {
+      margin: 16px 16px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 10px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--surface-border);
+      background: transparent;
+      color: var(--text-muted);
+      font-family: inherit;
+      font-weight: 600;
+      font-size: 0.875rem;
+      cursor: pointer;
+      transition: var(--transition);
+    }
+    .authorize-btn:hover { background: var(--surface-hover); color: var(--text); }
+    .authorize-btn.active {
+      color: var(--success);
+      border-color: rgba(16, 185, 129, 0.3);
+      background: rgba(16, 185, 129, 0.08);
+    }
+
     /* Responsive */
     @media (max-width: 1024px) {
       .charts-grid { grid-template-columns: 1fr; }
@@ -274,6 +299,9 @@
     <div class="brand">
       Voice<span>AI</span>
     </div>
+    <button id="authorize-btn" class="authorize-btn" title="Set the X-API-Key used for admin endpoints">
+      <span id="authorize-icon">🔓</span> <span id="authorize-label">Authorize</span>
+    </button>
     <div class="nav-menu">
       <a class="nav-item active">Dashboard</a>
       <a class="nav-item">Analytics</a>
@@ -419,11 +447,45 @@
       }
     });
 
+    // /api/admin/* routes require X-API-Key. Stored in this browser only; set/changed
+    // via the "Authorize" button (top-left) — no auto-popup on load.
+    function getApiKey() {
+        return localStorage.getItem('voiceguard_api_key') || '';
+    }
+
+    function updateAuthorizeButton() {
+        const hasKey = !!getApiKey();
+        const btn = document.getElementById('authorize-btn');
+        btn.classList.toggle('active', hasKey);
+        document.getElementById('authorize-icon').textContent = hasKey ? '🔒' : '🔓';
+        document.getElementById('authorize-label').textContent = hasKey ? 'Authorized' : 'Authorize';
+    }
+
+    document.getElementById('authorize-btn').addEventListener('click', () => {
+        const key = prompt('Enter admin API key (X-API-Key):', getApiKey());
+        if (key === null) return; // cancelled
+        if (key.trim()) {
+            localStorage.setItem('voiceguard_api_key', key.trim());
+        } else {
+            localStorage.removeItem('voiceguard_api_key');
+        }
+        updateAuthorizeButton();
+        fetchDashboardData();
+    });
+
+    updateAuthorizeButton();
+
     // Fetch Backend Data
     async function fetchDashboardData() {
         try {
+            const authHeaders = { 'X-API-Key': getApiKey() };
+
             // Fetch Metrics
-            const metricsRes = await fetch('/api/admin/metrics');
+            const metricsRes = await fetch('/api/admin/metrics', { headers: authHeaders });
+            if (metricsRes.status === 401) {
+                localStorage.removeItem('voiceguard_api_key');
+                updateAuthorizeButton();
+            }
             if (metricsRes.ok) {
                 const data = await metricsRes.json();
                 document.getElementById('val-total').textContent = data.total_requests;
@@ -448,7 +510,7 @@
             }
 
             // Fetch Recent Events
-            const eventsRes = await fetch('/api/admin/recent-events');
+            const eventsRes = await fetch('/api/admin/recent-events', { headers: authHeaders });
             if (eventsRes.ok) {
                 const data = await eventsRes.json();
                 const tbody = document.getElementById('events-body');

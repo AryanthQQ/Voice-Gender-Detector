@@ -37,6 +37,22 @@ EMAIL_TO = os.environ.get("EMAIL_TO")
 # When to notify: 'all' = every upload, 'female' = only female detections
 NOTIFY_ON: str = _cfg.get('NOTIFY_ON', 'all')
 
+# Shared secret required (via X-API-Key header) to call /predict-url and /api/admin/* routes
+API_KEY = os.environ.get("API_KEY", "")
+
+# Max audio jobs (STT + deepfake + gender) processed at once. Tune based on
+# available RAM/CPU — each job loads Whisper + ensemble models into memory.
+MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", 2))
+
+# Public URL where this server is reachable — used to build the admin dashboard
+# link in manual_review email alerts. Set to your real domain in production.
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8000")
+
+# Audio retention: auto-decided requests (clean accept/reject) are deleted right
+# after processing — no audio is kept. Only manual_review audio is kept, and only
+# for this many days, so a human has time to review it before it's purged.
+MANUAL_REVIEW_RETENTION_DAYS = int(os.environ.get("MANUAL_REVIEW_RETENTION_DAYS", 7))
+
 def email_configured() -> bool:
     """Returns True if Email credentials are set and not placeholder."""
     return (

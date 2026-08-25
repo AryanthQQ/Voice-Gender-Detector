@@ -100,14 +100,29 @@ def safe_load_audio(path, sr=16000):
 # Ensure ffmpeg is available for audioread
 os.environ["PATH"] += os.pathsep + os.path.dirname(imageio_ffmpeg.get_ffmpeg_exe())
 
+import hmac
+import ipaddress
+import socket
+from urllib.parse import urlparse
+
 import numpy as np
 import joblib
 import librosa
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
+
+# librosa.pyin() JIT-compiles its Viterbi decoder via numba on first call. On Windows,
+# that compilation crashes the process (segfault, exception 0xc0000005) if torch has
+# already initialized its bundled OpenMP runtime beforehand — confirmed by reproduction.
+# Compiling it here, before torch/transformers are imported below, avoids the conflict.
+logger.info("[WARMUP] Pre-compiling librosa.pyin (numba JIT) before loading torch...")
+librosa.pyin(np.zeros(16000 * 2, dtype=np.float32), fmin=librosa.note_to_hz('C2'), fmax=librosa.note_to_hz('C7'), sr=16000)
+logger.info("[WARMUP] Done.")
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request, Header, Depends
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
+from starlette.concurrency import run_in_threadpool
 
 from pydantic import BaseModel
 import config
@@ -115,9 +130,9 @@ import config
 from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
 
-# Limit entire request pipeline to 2 concurrent tasks to prevent VPS RAM exhaustion
+# Limit entire request pipeline to N concurrent tasks to prevent RAM exhaustion (tune via MAX_CONCURRENT_JOBS)
 import threading
-GLOBAL_PROCESS_LOCK = threading.Semaphore(2)
+GLOBAL_PROCESS_LOCK = threading.Semaphore(config.MAX_CONCURRENT_JOBS)
 
 # ── App ──────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Voice Gender Detection API", version="2.0.0")
@@ -151,6 +166,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def require_api_key(x_api_key: str = Header(default=None)):
+    """Guards /predict-url and /api/admin/* — caller must send a matching X-API-Key header."""
+    if not config.API_KEY:
+        raise HTTPException(status_code=503, detail="Server misconfigured: API_KEY not set.")
+    if not x_api_key or not hmac.compare_digest(x_api_key, config.API_KEY):
+        raise HTTPException(status_code=401, detail="Missing or invalid X-API-Key header.")
+
+
+def _assert_public_url(url: str):
+    """Blocks SSRF: only allow http/https URLs that resolve to a public IP address."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("Only http:// and https:// URLs are allowed.")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL is missing a hostname.")
+    try:
+        addrs = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        raise ValueError(f"Could not resolve host: {hostname}")
+    for family, _, _, _, sockaddr in addrs:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            raise ValueError(f"Refusing to fetch from non-public address: {ip}")
+
 # ── Models ───────────────────────────────────────────────────────────────────
 MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
 
@@ -169,9 +211,64 @@ except Exception as e:
 RECORDINGS_DIR = config.RECORDINGS_DIR
 TEMP_UPLOADS_DIR = config.TEMP_UPLOADS_DIR
 FAILED_DIR = config.FAILED_DIR
+MANUAL_REVIEW_DIR = config.MANUAL_REVIEW_DIR
 logger.info(f"[OK] Recordings will be saved to: {RECORDINGS_DIR}")
 logger.info(f"[OK] Temp uploads will be saved to: {TEMP_UPLOADS_DIR}")
 logger.info(f"[OK] Failed recordings will be saved to: {FAILED_DIR}")
+logger.info(f"[OK] Manual-review audio kept for {config.MANUAL_REVIEW_RETENTION_DAYS} days in: {MANUAL_REVIEW_DIR}")
+
+
+def _delete_audio(path: str):
+    """Deletes an audio file and its wav2vec embedding cache (path + '.npy'), if present."""
+    for p in (path, path + ".npy"):
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except Exception as e:
+            logger.exception(f"[CLEANUP] Failed to delete {p}: {e}")
+
+
+def _keep_for_manual_review(path: str) -> str:
+    """Moves audio into MANUAL_REVIEW_DIR so a human can review it, subject to
+    MANUAL_REVIEW_RETENTION_DAYS auto-purge. Returns the new path."""
+    dest = os.path.join(MANUAL_REVIEW_DIR, os.path.basename(path))
+    try:
+        os.replace(path, dest)
+    except Exception as e:
+        logger.exception(f"[MANUAL REVIEW] Failed to move {path} to {dest}: {e}")
+        return path
+    # Move the embedding cache too, if any, so nothing audio-derived lingers elsewhere.
+    try:
+        if os.path.exists(path + ".npy"):
+            os.replace(path + ".npy", dest + ".npy")
+    except Exception:
+        pass
+    return dest
+
+
+def _purge_expired_manual_review():
+    """Background loop: deletes manual_review audio older than the retention window.
+    This is the only place audio is meant to persist, and only temporarily."""
+    max_age_s = config.MANUAL_REVIEW_RETENTION_DAYS * 86400
+    while True:
+        try:
+            now = time.time()
+            for fname in os.listdir(MANUAL_REVIEW_DIR):
+                if fname.endswith(".npy"):
+                    continue
+                fpath = os.path.join(MANUAL_REVIEW_DIR, fname)
+                try:
+                    if os.path.isfile(fpath) and (now - os.path.getmtime(fpath)) > max_age_s:
+                        _delete_audio(fpath)
+                        logger.info(f"[CLEANUP] Purged expired manual_review file: {fname}")
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.exception(f"[CLEANUP] manual_review purge loop error: {e}")
+        time.sleep(3600)  # check hourly
+
+
+threading.Thread(target=_purge_expired_manual_review, daemon=True).start()
 
 # ── Simple In-Memory Cache for n8n Loop Protection ────────────────────────────
 processed_cache = {}
@@ -301,7 +398,7 @@ def _build_email_message(result: dict, filename: str, file_size_kb: float, sourc
     else:
         vote_summary = f"{votes}/3 Male"
 
-    dashboard_link = f"<p>🔗 <b>Action Required:</b> <a href=\"http://127.0.0.1:8000/static/admin.html\">Go to Admin Dashboard to Review</a></p>"
+    dashboard_link = f"<p>🔗 <b>Action Required:</b> <a href=\"{config.PUBLIC_BASE_URL}/static/admin.html\">Go to Admin Dashboard to Review</a></p>"
 
     html_body = f"""
     <html><body>
@@ -336,7 +433,7 @@ def _notify_async(result: dict, filename: str, file_size_kb: float, saved_path: 
     if _notifier is None:
         return
     label = result['ensemble']['label']
-    if label != 'manual_review':
+    if label != 'manual_review' and result.get('status') != 'manual_review':
         return  # Only send notifications for manual review cases
     # Extract source URL if available (from /predict-url flow)
     source_url = result.get('source_url') or None
@@ -485,6 +582,29 @@ def extract_features(audio_path: str) -> dict:
     }
 
 
+# ── Secondary Gender Verification (corroborates 'female' verdicts only) ───────
+def _corroborate_female(audio_path: str, result: dict) -> dict:
+    """Re-checks a 'female' ensemble verdict with the secondary Wav2Vec2 model before
+    auto-accept. Any disagreement is escalated to manual_review instead of auto-rejecting
+    or auto-accepting, since a false accept (male passing as female) is the costly failure
+    mode we're guarding against. Skipped entirely for male/manual_review verdicts to avoid
+    the extra model cost on requests that are already not going to auto-accept."""
+    try:
+        from gender_verifier import verify_female
+        secondary = verify_female(audio_path)
+    except Exception as e:
+        logger.exception(f"[SECONDARY-GENDER] Verifier unavailable, keeping primary ensemble decision: {e}")
+        result['secondary_check'] = {'status': 'unavailable'}
+        return result
+
+    result['secondary_check'] = secondary
+    if secondary['label'] == 'male':
+        logger.info(f"[SECONDARY-GENDER] Disagreement with ensemble (secondary said male, {secondary['confidence']}%). Escalating to manual_review.")
+        result['ensemble']['label'] = 'manual_review'
+        result['decision'] = 'uncertain'
+    return result
+
+
 # ── Prediction ────────────────────────────────────────────────────────────────
 def predict_gender(features: dict) -> dict:
     """Run all 3 models and return ensemble prediction."""
@@ -564,12 +684,20 @@ async def predict(
 ):
     """
     Upload audio → save to disk → extract features → predict gender → notify Telegram.
+    Heavy processing runs in a worker thread (via run_in_threadpool) so concurrent
+    requests are actually processed in parallel instead of serializing on the
+    single asyncio event loop — GLOBAL_PROCESS_LOCK below then caps how many of
+    those threads run heavy model inference at once.
     """
     if svm_model is None:
         raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
 
-    # ── 1. Read uploaded audio content ────────────────────────────────────────
     content = file.file.read()
+    filename = file.filename
+    return await run_in_threadpool(_predict_sync, content, filename, advisor_name)
+
+
+def _predict_sync(content: bytes, filename: str, advisor_name: str) -> JSONResponse:
     file_size_kb = len(content) / 1024
 
     request_id = uuid.uuid4().hex
@@ -586,21 +714,23 @@ async def predict(
                 data = {}
             dec = data.get('decision', data.get('status', 'unknown'))
             conf = data.get('ensemble', {}).get('confidence', 0.0)
-            logger.info(f"ReqID: {request_id} | File: {file.filename} | Size: {file_size_kb:.1f}KB | Total: {tot_ms:.1f}ms | STT: {t_stt:.1f}ms | Deepfake: {t_df:.1f}ms | Gender: {t_gen:.1f}ms | Decision: {dec} | Conf: {conf} | Err: {err}")
+            logger.info(f"ReqID: {request_id} | File: {filename} | Size: {file_size_kb:.1f}KB | Total: {tot_ms:.1f}ms | STT: {t_stt:.1f}ms | Deepfake: {t_df:.1f}ms | Gender: {t_gen:.1f}ms | Decision: {dec} | Conf: {conf} | Err: {err}")
         except Exception:
             pass
         return res
 
     # ── 2. Determine file extension ───────────────────────────────────────────
     allowed = {'.wav', '.mp3', '.ogg', '.m4a', '.webm', '.flac'}
-    original_name = file.filename or 'recording.wav'
+    original_name = filename or 'recording.wav'
     ext = os.path.splitext(original_name.lower())[1]
     if ext not in allowed:
         ext = '.wav'  # Default to wav (browser sends our encoded WAV)
 
     # ── 3. Save permanently to recordings/ folder ─────────────────────────────
+    # request_id is included (not just the second-precision timestamp) so concurrent
+    # requests arriving in the same second never collide on the same filename.
     timestamp   = datetime.now().strftime('%Y%m%d_%H%M%S')
-    saved_name  = f"voice_{timestamp}{ext}"
+    saved_name  = f"voice_{timestamp}_{request_id[:8]}{ext}"
     saved_path  = os.path.join(RECORDINGS_DIR, saved_name)
 
     with open(saved_path, 'wb') as f:
@@ -614,16 +744,18 @@ async def predict(
         max_amp = np.max(np.abs(y))
         if max_amp < 0.08:
             logger.info(f"[REJECT] Audio volume too low (Max Amp: {max_amp:.3f})")
+            saved_basename = os.path.basename(saved_path)
+            _delete_audio(saved_path)
             return log_req(JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': False,
                 'status': 'rejected_fake',
                 'reason': "Audio volume is very low or completely silent. Please speak loudly and clearly.",
-                'saved_as': os.path.basename(saved_path),
+                'saved_as': saved_basename,
             }))
             
-        norm_name = f"voice_{timestamp}_norm.wav"
+        norm_name = f"voice_{timestamp}_{request_id[:8]}_norm.wav"
         norm_path = os.path.join(RECORDINGS_DIR, norm_name)
         sf.write(norm_path, y, 16000)
         
@@ -643,7 +775,15 @@ async def predict(
             stt_audio, _ = safe_load_audio(saved_path, sr=16000)
             inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
             with torch.no_grad():
-                predicted_ids = stt_model.generate(inputs.input_features)
+                # no_repeat_ngram_size/repetition_penalty guard against Whisper's known repetition-loop
+                # degeneration on ambiguous audio (it can otherwise repeat a phrase for hundreds of
+                # tokens, ballooning latency from ~2s to 20s+ and producing garbage transcriptions).
+                predicted_ids = stt_model.generate(
+                    inputs.input_features,
+                    max_new_tokens=200,
+                    no_repeat_ngram_size=3,
+                    repetition_penalty=1.3,
+                )
 
             transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
         words = transcription.split()
@@ -653,13 +793,15 @@ async def predict(
         
         if len(meaningful_words) < 5:
             logger.info(f"[REJECT] Audio unintelligible. Words: {len(meaningful_words)}")
+            saved_basename = os.path.basename(saved_path)
+            _delete_audio(saved_path)
             return log_req(JSONResponse(content={
                 'accepted': False,
                 'is_female': False,
                 'is_ai': False,
                 'status': 'rejected_fake',
                 'reason': f"Voice is not clearly audible (Words: {len(meaningful_words)}). Please speak at least 5 meaningful words in any language.",
-                'saved_as': os.path.basename(saved_path),
+                'saved_as': saved_basename,
             }))
     except Exception as e:
         logger.exception(f"[WARN] Failed STT check for {saved_path}: {e}")
@@ -687,55 +829,60 @@ async def predict(
 
         if ai_result.get('is_ai'):
             reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
-            logger.info(f"[REJECT] Spoof/AI Voice detected. Reason: {reason_str}")
-            # Keep failed recording but mark it
-            err_path = saved_path.replace(ext, f'_AI_FAKE{ext}')
-            try: os.rename(saved_path, err_path)
-            except: pass
-            
+            # The deepfake model still has a residual false-positive rate on real voices
+            # outside its training distribution, so a positive here goes to manual_review
+            # instead of an outright reject — a human makes the final call instead of an
+            # unverified model auto-rejecting a real user.
+            logger.info(f"[MANUAL REVIEW] Deepfake model flagged audio, escalating instead of auto-rejecting. Reason: {reason_str}")
+            kept_path = _keep_for_manual_review(saved_path)
+
             result['accepted'] = False
-            result['status'] = 'rejected_fake'
-            result['decision'] = 'reject'
+            result['status'] = 'manual_review'
+            result['decision'] = 'uncertain'
             result['reason'] = reason_str
-            result['saved_as'] = os.path.basename(err_path)
+            result['saved_as'] = os.path.basename(kept_path)
             result['saved_kb'] = round(file_size_kb, 1)
+            _dispatch_email_notification(result, os.path.basename(kept_path), file_size_kb, kept_path)
         else:
-            # Add saved filename to result for frontend display
-            result['saved_as'] = saved_name
+            if result['ensemble']['label'] == 'female':
+                result = _corroborate_female(saved_path, result)
+
             result['saved_kb'] = round(file_size_kb, 1)
 
-            # ── 6. Send Email notification (background thread) ─────────────────
-            _dispatch_email_notification(result, saved_name, file_size_kb, saved_path)
+            if result['ensemble']['label'] == 'manual_review':
+                # Corroboration disagreed with the primary ensemble — keep for human review.
+                kept_path = _keep_for_manual_review(saved_path)
+                result['saved_as'] = os.path.basename(kept_path)
+                _dispatch_email_notification(result, os.path.basename(kept_path), file_size_kb, kept_path)
+            else:
+                # Auto-decided (clean accept/reject) — no audio is retained.
+                result['saved_as'] = saved_name
+                _dispatch_email_notification(result, saved_name, file_size_kb, saved_path)
+                _delete_audio(saved_path)
 
         return log_req(JSONResponse(content=result))
 
     except ValueError as e:
-        # Keep failed recording for debugging but mark it
-        err_path = saved_path.replace(ext, f'_FAILED{ext}')
-        try:
-            os.rename(saved_path, err_path)
-        except Exception:
-            pass
+        # Auto-rejected (bad audio) — no audio is retained.
+        saved_basename = os.path.basename(saved_path)
+        _delete_audio(saved_path)
         logger.exception(f"[REJECT] Audio validation failed: {e}")
         return log_req(JSONResponse(content={
             'accepted': False,
             'is_female': False,
             'reason': str(e),
-            'saved_as': os.path.basename(err_path)
+            'saved_as': saved_basename
         }), err=str(e))
     except Exception as e:
-        # Keep failed recording for debugging but mark it
-        err_path = saved_path.replace(ext, f'_FAILED{ext}')
-        try:
-            os.rename(saved_path, err_path)
-        except Exception:
-            pass
+        # Auto-rejected (processing error) — no audio is retained.
+        saved_basename = os.path.basename(saved_path)
+        _delete_audio(saved_path)
         logger.exception(f"[REJECT] Audio processing error for uploaded file: {e}")
         return log_req(JSONResponse(content={
             'accepted': False,
             'is_female': False,
             'reason': f'Audio processing error: {str(e)}',
-            'saved_as': os.path.basename(err_path)
+            'saved_as': saved_basename
         }), err=str(e))
 
 
@@ -755,7 +902,9 @@ async def health():
     ram_usage_mb = process.memory_info().rss / (1024 * 1024)
     
     try:
-        rec_count = len([f for f in os.listdir(RECORDINGS_DIR) if not f.endswith('_FAILED.wav')])
+        # No audio is retained except pending manual_review cases (everything else
+        # is deleted right after processing), so that's what's meaningful to report here.
+        rec_count = len([f for f in os.listdir(MANUAL_REVIEW_DIR) if not f.endswith('.npy')])
     except Exception:
         rec_count = 0
 
@@ -774,16 +923,19 @@ async def health():
         },
         "email_configured": config.email_configured(),
         "recordings_saved": rec_count,
-        "recordings_dir": RECORDINGS_DIR,
+        "recordings_dir": MANUAL_REVIEW_DIR,
     }
 
 
-@app.get("/recordings")
+@app.get("/recordings", dependencies=[Depends(require_api_key)])
 async def list_recordings():
-    """Admin endpoint: list all saved recordings."""
+    """Admin endpoint: lists pending manual_review audio (the only audio this app
+    retains — everything else is deleted right after processing)."""
     files = []
-    for fname in sorted(os.listdir(RECORDINGS_DIR), reverse=True):
-        fpath = os.path.join(RECORDINGS_DIR, fname)
+    for fname in sorted(os.listdir(MANUAL_REVIEW_DIR), reverse=True):
+        if fname.endswith(".npy"):
+            continue
+        fpath = os.path.join(MANUAL_REVIEW_DIR, fname)
         if os.path.isfile(fpath):
             stat = os.stat(fpath)
             files.append({
@@ -801,7 +953,7 @@ class PredictUrlRequest(BaseModel):
     userId: Union[str, int] = "unknown"
     fullname: str = "Unknown"
 
-@app.post("/predict-url")
+@app.post("/predict-url", dependencies=[Depends(require_api_key)])
 async def predict_from_url(body: PredictUrlRequest):
     """
     Automation endpoint for n8n / AWS Lambda / any webhook.
@@ -836,11 +988,15 @@ async def predict_from_url(body: PredictUrlRequest):
         logger.info(f"[CACHE] Returning cached result for Advisor ID: {advisor_id}")
         return JSONResponse(content=processed_cache[audio_url])
 
-    # ── 1. Download audio from URL ────────────────────────────────────────────
+    # ── 1. Validate URL to prevent SSRF (no internal/private network fetches) ──
+    try:
+        _assert_public_url(audio_url)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # ── 2. Download audio from URL (TLS verification enabled) ─────────────────
     try:
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode    = ssl.CERT_NONE
         req_obj = urllib.request.Request(
             audio_url,
             headers={"User-Agent": "VoiceGenderBot/2.0"}
@@ -852,8 +1008,14 @@ async def predict_from_url(body: PredictUrlRequest):
 
     file_size_kb = len(content) / 1024
 
+    # Heavy processing runs in a worker thread so concurrent /predict-url calls are
+    # actually processed in parallel instead of serializing on the event loop.
+    return await run_in_threadpool(_predict_url_sync, content, audio_url, advisor_id, advisor_name, file_size_kb)
+
+
+def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_name: str, file_size_kb: float) -> JSONResponse:
     request_id = uuid.uuid4().hex
-    
+
     t_start = time.time()
     t_stt, t_df, t_gen = 0.0, 0.0, 0.0
     def log_req(res, err=None):
@@ -951,10 +1113,15 @@ async def predict_from_url(body: PredictUrlRequest):
                 stt_audio, _ = safe_load_audio(tmp_path, sr=16000)
                 inputs = stt_processor(stt_audio, sampling_rate=16000, return_tensors='pt')
                 with torch.no_grad():
-                    predicted_ids = stt_model.generate(inputs.input_features)
+                    predicted_ids = stt_model.generate(
+                        inputs.input_features,
+                        max_new_tokens=200,
+                        no_repeat_ngram_size=3,
+                        repetition_penalty=1.3,
+                    )
 
                 transcription = stt_processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
-            
+
             words = transcription.split()
             meaningful_words = [w for w in words if len(w) >= 3]
             t_stt = (time.time() - t_stt_start) * 1000
@@ -995,11 +1162,23 @@ async def predict_from_url(body: PredictUrlRequest):
 
         if ai_result.get('is_ai'):
             reason_str = ai_result.get('reason', f"AI/Synthetic voice detected ({ai_result.get('confidence')}%)")
-            logger.info(f"[REJECT] Spoof/AI Voice detected for Advisor ID: {advisor_id}. Reason: {reason_str}")
-            
+            # Same reasoning as /predict: the deepfake model still has a residual false-positive
+            # rate on real voices outside its training distribution, so escalate to manual_review
+            # instead of auto-rejecting a real advisor.
+            logger.info(f"[MANUAL REVIEW] Deepfake model flagged audio for Advisor ID: {advisor_id}, escalating instead of auto-rejecting. Reason: {reason_str}")
+            kept_path = _keep_for_manual_review(tmp_path)  # tmp_path itself no longer exists after this
+
+            result['status'] = 'manual_review'
+            result['request_id'] = request_id
+            result['advisor_id'] = advisor_id
+            result['advisor_name'] = advisor_name
+            result['reason'] = reason_str
+            result['source_url'] = audio_url
+            _dispatch_email_notification(result, f"{advisor_name} (ID:{advisor_id})", file_size_kb, kept_path)
+
             n8n_result = {
-                'decision': 'reject',
-                'status': 6,
+                'decision': 'uncertain',
+                'status': 1,
                 'accepted': False,
                 'advisor_id': advisor_id,
                 'advisor_name': advisor_name,
@@ -1007,9 +1186,12 @@ async def predict_from_url(body: PredictUrlRequest):
                 'is_female': False,
                 'reason': reason_str
             }
-            
+
             _add_to_cache(audio_url, n8n_result)
             return log_req(JSONResponse(content=n8n_result))
+
+        if result['ensemble']['label'] == 'female':
+            result = _corroborate_female(tmp_path, result)
 
         label = result['ensemble']['label']
         display_name = f"{advisor_name} (ID:{advisor_id})"
@@ -1055,8 +1237,13 @@ async def predict_from_url(body: PredictUrlRequest):
         result['email_configured']     = config.email_configured()
         result['ai_voice']             = ai_result.get('is_ai', False)
 
-        # ── 7. Email notification (background) ─────────────────────────────
-        _dispatch_email_notification(result, display_name, file_size_kb, tmp_path)
+        # ── 7. Email notification (background) + audio retention ───────────
+        if result['status'] == 'manual_review':
+            kept_path = _keep_for_manual_review(tmp_path)  # tmp_path itself no longer exists after this
+            _dispatch_email_notification(result, display_name, file_size_kb, kept_path)
+        else:
+            # Auto-decided (clean accept) — no audio is retained; finally: below deletes tmp_path.
+            _dispatch_email_notification(result, display_name, file_size_kb, tmp_path)
 
         n8n_result = {
             'decision': result.get('decision', 'reject'),
@@ -1099,16 +1286,14 @@ async def predict_from_url(body: PredictUrlRequest):
         }), err=str(e))
 
     finally:
-        # Always clean up temp file
+        # Always clean up the temp file and its embedding cache (no-op if it was
+        # already moved into MANUAL_REVIEW_DIR above).
         if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-                logger.info(f"[URL] Temp file cleaned up: {tmp_path}")
-            except Exception:
-                pass
+            _delete_audio(tmp_path)
+            logger.info(f"[URL] Temp file cleaned up: {tmp_path}")
 
 
-@app.get("/api/admin/metrics")
+@app.get("/api/admin/metrics", dependencies=[Depends(require_api_key)])
 async def admin_metrics():
     import os, re
     log_path = os.path.join(config.LOGS_DIR, "application.log")
@@ -1143,7 +1328,7 @@ async def admin_metrics():
         "avg_latency_ms": round(avg_latency, 1)
     }
 
-@app.get("/api/admin/recent-events")
+@app.get("/api/admin/recent-events", dependencies=[Depends(require_api_key)])
 async def admin_recent_events():
     import os, re
     log_path = os.path.join(config.LOGS_DIR, "application.log")
