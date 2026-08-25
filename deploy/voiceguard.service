@@ -1,0 +1,41 @@
+# systemd unit for the Voice Gender Detection API (VoiceGuard).
+#
+# Install on the Ubuntu server:
+#   sudo cp deploy/voiceguard.service /etc/systemd/system/voiceguard.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now voiceguard
+#
+# Adjust User/WorkingDirectory/ExecStart below if the app isn't deployed to
+# /opt/voiceguard under a "voiceguard" system user, or if the venv lives
+# somewhere else.
+#
+# Create the user + directory once, if they don't exist yet:
+#   sudo useradd --system --home /opt/voiceguard --shell /usr/sbin/nologin voiceguard
+#   sudo mkdir -p /opt/voiceguard /data/voiceguard
+#   sudo chown -R voiceguard:voiceguard /opt/voiceguard /data/voiceguard
+
+[Unit]
+Description=VoiceGuard - Voice Gender Detection API
+After=network.target
+
+[Service]
+Type=simple
+User=voiceguard
+Group=voiceguard
+WorkingDirectory=/opt/voiceguard
+EnvironmentFile=/opt/voiceguard/.env
+ExecStart=/opt/voiceguard/venv/bin/python /opt/voiceguard/main.py
+Restart=on-failure
+RestartSec=5
+
+# Give model loading (torch/whisper) enough time before systemd gives up on startup.
+TimeoutStartSec=120
+
+# Hardening (safe defaults for a single-purpose service; loosen if it breaks something).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/data/voiceguard
+
+[Install]
+WantedBy=multi-user.target
