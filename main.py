@@ -1,8 +1,9 @@
 """
 Voice Gender Detection - FastAPI Backend
 - Accepts audio files (WAV/MP3/OGG etc.)
-- Extracts 20 acoustic features via librosa/soundfile
-- Runs SVM + GBM + Random Forest ensemble prediction
+- Extracts acoustic features via librosa/soundfile (used for the pitch
+  safety filter and the UI's frequency display)
+- Runs a pretrained Wav2Vec2-XLSR model as the primary gender classifier
 - Auto-saves every recording to recordings/ folder
 - Sends Email notification to admin with verification result
 """
@@ -106,7 +107,6 @@ import socket
 from urllib.parse import urlparse
 
 import numpy as np
-import joblib
 import librosa
 
 # librosa.pyin() JIT-compiles its Viterbi decoder via numba on first call. On Windows,
@@ -194,19 +194,14 @@ def _assert_public_url(url: str):
                 or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
             raise ValueError(f"Refusing to fetch from non-public address: {ip}")
 
-# ── Models ───────────────────────────────────────────────────────────────────
-MODELS_DIR = os.path.join(os.path.dirname(__file__), 'models')
+# ── Primary Gender Model ─────────────────────────────────────────────────────
+import gender_verifier
 
 try:
-    svm_model = joblib.load(os.path.join(MODELS_DIR, 'svm_model.pkl'))
-    gbm_model = joblib.load(os.path.join(MODELS_DIR, 'gbm_model.pkl'))
-    rf_model  = joblib.load(os.path.join(MODELS_DIR, 'rf_model.pkl'))
-    scaler    = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
-    FEATURES  = joblib.load(os.path.join(MODELS_DIR, 'features.pkl'))
-    logger.info("[OK] All models loaded successfully!")
+    gender_verifier.load_model()
+    logger.info("[OK] Primary gender model (Wav2Vec2-XLSR) loaded successfully!")
 except Exception as e:
-    logger.exception(f"[ERR] Error loading models: {e}")
-    svm_model = gbm_model = rf_model = scaler = None
+    logger.exception(f"[ERR] Error loading primary gender model: {e}")
 
 # ── Recordings directory ──────────────────────────────────────────────────────
 RECORDINGS_DIR = config.RECORDINGS_DIR
@@ -583,89 +578,46 @@ def extract_features(audio_path: str) -> dict:
     }
 
 
-# ── Secondary Gender Verification (corroborates 'female' verdicts only) ───────
-def _corroborate_female(audio_path: str, result: dict) -> dict:
-    """Re-checks a 'female' ensemble verdict with the secondary Wav2Vec2 model before
-    auto-accept. Any disagreement is escalated to manual_review instead of auto-rejecting
-    or auto-accepting, since a false accept (male passing as female) is the costly failure
-    mode we're guarding against. Skipped entirely for male/manual_review verdicts to avoid
-    the extra model cost on requests that are already not going to auto-accept."""
-    try:
-        from gender_verifier import verify_female
-        secondary = verify_female(audio_path)
-    except Exception as e:
-        logger.exception(f"[SECONDARY-GENDER] Verifier unavailable, keeping primary ensemble decision: {e}")
-        result['secondary_check'] = {'status': 'unavailable'}
-        return result
-
-    result['secondary_check'] = secondary
-    if secondary['label'] == 'male':
-        logger.info(f"[SECONDARY-GENDER] Disagreement with ensemble (secondary said male, {secondary['confidence']}%). Escalating to manual_review.")
-        result['ensemble']['label'] = 'manual_review'
-        result['decision'] = 'uncertain'
-    return result
-
-
 # ── Prediction ────────────────────────────────────────────────────────────────
-def predict_gender(features: dict) -> dict:
-    """Run all 3 models and return ensemble prediction."""
-    feat_vec    = np.array([[features[f] for f in FEATURES]])
-    feat_scaled = scaler.transform(feat_vec)
+from pitch_safety_filter import apply_pitch_safety_filter
 
-    svm_prob = svm_model.predict_proba(feat_vec)[0]
-    svm_pred = int(np.argmax(svm_prob))
 
-    gbm_prob = gbm_model.predict_proba(feat_scaled)[0]
-    gbm_pred = int(np.argmax(gbm_prob))
+def predict_gender(audio_path: str, features: dict) -> dict:
+    """Runs the primary Wav2Vec2-XLSR gender model, then applies the pitch
+    safety filter. Returns the same response shape the old SVM/GBM/RF
+    ensemble used to (svm/gbm/rf/ensemble/decision/features) for API
+    backward compatibility — svm/gbm/rf now all mirror the single primary
+    model's result."""
+    primary = gender_verifier.classify_gender(audio_path)
+    primary_label = primary['label']
+    primary_conf = primary['confidence'] / 100.0
 
-    rf_prob  = rf_model.predict_proba(feat_scaled)[0]
-    rf_pred  = int(np.argmax(rf_prob))
-
-    models = [
-        ('male' if svm_pred == 1 else 'female', float(max(svm_prob))),
-        ('male' if gbm_pred == 1 else 'female', float(max(gbm_prob))),
-        ('male' if rf_pred  == 1 else 'female', float(max(rf_prob)))
-    ]
-    best_model = max(models, key=lambda x: x[1])
-    
-    final_label = best_model[0]
-    final_conf = best_model[1]
-
-    male_votes = sum([svm_pred, gbm_pred, rf_pred])
-
-    # ── PITCH (FREQUENCY) HARD FILTER & MANUAL REVIEW ───────────────────
     meanfun_hz = features['meanfun'] * 1000
     meanfreq_hz = features['meanfreq'] * 1000
-    if final_label == 'female':
-        if meanfun_hz < 130.0 or meanfreq_hz < 130.0:
-            # Definitely Male range (below 130 Hz is clearly male)
-            final_label = 'male'
-            final_conf = 0.999
-            logger.info(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
-        elif meanfun_hz < 170.0 or meanfreq_hz < 160.0 or (final_conf * 100) < 85.0:
-            # Ambiguous pitch, frequency or low confidence -> send to manager
-            final_label = 'manual_review'
-            logger.info(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
-        elif meanfun_hz > 270.0 and meanfreq_hz < 230.0:
-            # High pitch but low formants (Child or Male Falsetto) -> send to manager
-            final_label = 'manual_review'
-            logger.info(f"[MANUAL REVIEW] Falsetto/Child detected. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
 
+    final_label, final_conf = apply_pitch_safety_filter(primary_label, primary_conf, meanfun_hz, meanfreq_hz)
+
+    if final_label == 'manual_review':
+        logger.info(f"[MANUAL REVIEW] Ambiguous voice. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz, Conf: {final_conf*100:.1f}%.")
+    elif final_label != primary_label:
+        logger.info(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
+
+    model_output = {'label': final_label, 'confidence': float(final_conf) * 100}
 
     return {
-        'svm': {'label': 'male' if svm_pred == 1 else 'female', 'confidence': float(max(svm_prob)) * 100},
-        'gbm': {'label': 'male' if gbm_pred == 1 else 'female', 'confidence': float(max(gbm_prob)) * 100},
-        'rf':  {'label': 'male' if rf_pred  == 1 else 'female', 'confidence': float(max(rf_prob))  * 100},
+        'svm': dict(model_output),
+        'gbm': dict(model_output),
+        'rf': dict(model_output),
         'ensemble': {
             'label':      final_label,
             'confidence': float(final_conf) * 100,
-            'male_votes': male_votes,
+            'male_votes': 3 if final_label == 'male' else 0,
             'total_votes': 3,
         },
         'decision': 'accept' if final_label == 'female' else ('uncertain' if final_label == 'manual_review' else 'reject'),
         'features': {
-            'meanfun_hz':  round(features['meanfun'] * 1000, 1),
-            'meanfreq_hz': round(features['meanfreq'] * 1000, 1),
+            'meanfun_hz':  round(meanfun_hz, 1),
+            'meanfreq_hz': round(meanfreq_hz, 1),
             'IQR':         round(features['IQR'], 4),
         },
     }
@@ -690,7 +642,7 @@ async def predict(
     single asyncio event loop — GLOBAL_PROCESS_LOCK below then caps how many of
     those threads run heavy model inference at once.
     """
-    if svm_model is None:
+    if not gender_verifier.is_loaded():
         raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
 
     content = file.file.read()
@@ -819,7 +771,7 @@ def _predict_sync(content: bytes, filename: str, advisor_name: str) -> JSONRespo
             t_df = (time.time() - t_df_start) * 1000
 
             t_gen_start = time.time()
-            result   = predict_gender(features)
+            result   = predict_gender(saved_path, features)
             t_gen = (time.time() - t_gen_start) * 1000
 
         result['ai'] = ai_result
@@ -845,9 +797,6 @@ def _predict_sync(content: bytes, filename: str, advisor_name: str) -> JSONRespo
             result['saved_kb'] = round(file_size_kb, 1)
             _dispatch_email_notification(result, os.path.basename(kept_path), file_size_kb, kept_path)
         else:
-            if result['ensemble']['label'] == 'female':
-                result = _corroborate_female(saved_path, result)
-
             result['saved_kb'] = round(file_size_kb, 1)
 
             if result['ensemble']['label'] == 'manual_review':
@@ -917,9 +866,9 @@ async def health():
         "uptime_seconds": round(uptime_seconds, 1),
         "cpu_usage_percent": cpu_usage,
         "ram_usage_mb": round(ram_usage_mb, 1),
-        "models_loaded": svm_model is not None,
+        "models_loaded": gender_verifier.is_loaded(),
         "detailed_model_status": {
-            "svm_ensemble": svm_model is not None,
+            "primary_gender_model": gender_verifier.is_loaded(),
             "stt_whisper": stt_model is not None,
         },
         "email_configured": config.email_configured(),
@@ -974,7 +923,7 @@ async def predict_from_url(body: PredictUrlRequest):
           "saved_as": "advisor_12345_20260604_153000.wav",
           "is_female": true, "confidence": 91.2 }
     """
-    if svm_model is None:
+    if not gender_verifier.is_loaded():
         raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
 
     audio_url    = body.url.strip()
@@ -1156,7 +1105,7 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
             features = extract_features(tmp_path)
 
             t_gen_start = time.time()
-            result   = predict_gender(features)
+            result   = predict_gender(tmp_path, features)
             t_gen = (time.time() - t_gen_start) * 1000
         result['ai'] = ai_result
         result['ai_voice'] = ai_result.get('is_ai', False)
@@ -1190,9 +1139,6 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
 
             _add_to_cache(audio_url, n8n_result)
             return log_req(JSONResponse(content=n8n_result))
-
-        if result['ensemble']['label'] == 'female':
-            result = _corroborate_female(tmp_path, result)
 
         label = result['ensemble']['label']
         display_name = f"{advisor_name} (ID:{advisor_id})"
