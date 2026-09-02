@@ -131,6 +131,7 @@ from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
 import fingerprint
 import fingerprint_store
+import classical_corroborator
 
 # Limit entire request pipeline to N concurrent tasks to prevent RAM exhaustion (tune via MAX_CONCURRENT_JOBS)
 import threading
@@ -206,6 +207,12 @@ try:
     logger.info("[OK] Primary gender model (Wav2Vec2-XLSR) loaded successfully!")
 except Exception as e:
     logger.exception(f"[ERR] Error loading primary gender model: {e}")
+
+try:
+    classical_corroborator.load_models()
+    logger.info("[OK] Classical corroboration ensemble (SVM/GBM/RF) loaded successfully!")
+except Exception as e:
+    logger.exception(f"[ERR] Error loading classical corroboration ensemble: {e}")
 
 # ── Recordings directory ──────────────────────────────────────────────────────
 RECORDINGS_DIR = config.RECORDINGS_DIR
@@ -607,6 +614,16 @@ def predict_gender(audio_path: str, features: dict) -> dict:
     elif final_label != primary_label:
         logger.info(f"[PITCH FILTER] Override applied. Pitch: {meanfun_hz:.1f} Hz, MeanFreq: {meanfreq_hz:.1f} Hz (Male range).")
 
+    if final_label == 'female':
+        try:
+            corroboration = classical_corroborator.corroborate(features)
+            if classical_corroborator.should_escalate(corroboration):
+                logger.info(f"[MANUAL REVIEW] Classical ensemble disagreed with primary 'female' verdict (male_votes={corroboration['male_votes']}/3, svm={corroboration['svm']}, gbm={corroboration['gbm']}, rf={corroboration['rf']}). Escalating.")
+                final_label = 'manual_review'
+        except Exception as e:
+            logger.exception(f"[WARN] Classical corroboration failed, escalating to manual_review as a precaution: {e}")
+            final_label = 'manual_review'
+
     model_output = {'label': final_label, 'confidence': float(final_conf) * 100}
 
     return {
@@ -647,8 +664,8 @@ async def predict(
     single asyncio event loop — GLOBAL_PROCESS_LOCK below then caps how many of
     those threads run heavy model inference at once.
     """
-    if not gender_verifier.is_loaded():
-        raise HTTPException(status_code=503, detail="Primary gender model failed to load. Check server logs.")
+    if not gender_verifier.is_loaded() or not classical_corroborator.is_loaded():
+        raise HTTPException(status_code=503, detail="Gender models failed to load. Check server logs.")
 
     content = file.file.read()
     filename = file.filename
@@ -871,9 +888,10 @@ async def health():
         "uptime_seconds": round(uptime_seconds, 1),
         "cpu_usage_percent": cpu_usage,
         "ram_usage_mb": round(ram_usage_mb, 1),
-        "models_loaded": gender_verifier.is_loaded(),
+        "models_loaded": gender_verifier.is_loaded() and classical_corroborator.is_loaded(),
         "detailed_model_status": {
             "primary_gender_model": gender_verifier.is_loaded(),
+            "classical_corroborator": classical_corroborator.is_loaded(),
             "stt_whisper": stt_model is not None,
         },
         "email_configured": config.email_configured(),
@@ -928,8 +946,8 @@ async def predict_from_url(body: PredictUrlRequest):
           "saved_as": "advisor_12345_20260604_153000.wav",
           "is_female": true, "confidence": 91.2 }
     """
-    if not gender_verifier.is_loaded():
-        raise HTTPException(status_code=503, detail="Primary gender model failed to load. Check server logs.")
+    if not gender_verifier.is_loaded() or not classical_corroborator.is_loaded():
+        raise HTTPException(status_code=503, detail="Gender models failed to load. Check server logs.")
 
     audio_url    = body.url.strip()
     advisor_id   = str(body.userId)

@@ -48,13 +48,47 @@ def test_predict_gender_manual_review_at_84_9_percent_confidence():
 
 def test_predict_gender_accepts_at_85_1_percent_confidence():
     fake_features = {'meanfun': 0.21, 'meanfreq': 0.20, 'IQR': 0.05}  # 210Hz/200Hz - clearly female pitch range
-    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 85.1}):
+    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 85.1}), \
+         patch('classical_corroborator.corroborate', return_value={
+             'svm': {'label': 'female', 'confidence': 91.0},
+             'gbm': {'label': 'female', 'confidence': 88.0},
+             'rf':  {'label': 'female', 'confidence': 93.0},
+             'male_votes': 0,
+         }):
         result = main.predict_gender('/fake/path/does-not-matter.wav', fake_features)
     assert result['ensemble']['label'] == 'female'
     assert result['decision'] == 'accept'
     assert result['svm']['label'] == 'female'
     assert result['gbm']['label'] == 'female'
     assert result['rf']['label'] == 'female'
+
+
+def test_predict_gender_escalates_when_classical_ensemble_disagrees():
+    fake_features = {'meanfun': 0.21, 'meanfreq': 0.20, 'IQR': 0.05}  # clearly-female pitch range
+    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 99.0}), \
+         patch('classical_corroborator.corroborate', return_value={
+             'svm': {'label': 'male', 'confidence': 90.0},
+             'gbm': {'label': 'male', 'confidence': 85.0},
+             'rf':  {'label': 'female', 'confidence': 55.0},
+             'male_votes': 2,
+         }):
+        result = main.predict_gender('/fake/path/does-not-matter.wav', fake_features)
+    assert result['ensemble']['label'] == 'manual_review'
+    assert result['decision'] == 'uncertain'
+
+
+def test_predict_gender_keeps_accept_when_classical_ensemble_agrees():
+    fake_features = {'meanfun': 0.21, 'meanfreq': 0.20, 'IQR': 0.05}
+    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 99.0}), \
+         patch('classical_corroborator.corroborate', return_value={
+             'svm': {'label': 'female', 'confidence': 88.0},
+             'gbm': {'label': 'female', 'confidence': 82.0},
+             'rf':  {'label': 'male', 'confidence': 60.0},
+             'male_votes': 1,
+         }):
+        result = main.predict_gender('/fake/path/does-not-matter.wav', fake_features)
+    assert result['ensemble']['label'] == 'female'
+    assert result['decision'] == 'accept'
 
 
 def _read_fixture_bytes():
