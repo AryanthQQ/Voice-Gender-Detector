@@ -129,6 +129,8 @@ import config
 
 from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
+import fingerprint
+import fingerprint_store
 
 # Limit entire request pipeline to N concurrent tasks to prevent RAM exhaustion (tune via MAX_CONCURRENT_JOBS)
 import threading
@@ -149,6 +151,8 @@ gender_detector = gender.Detector()
 
 # Initialize Advanced Deepfake Detector
 advanced_deepfake_detector = AdvancedDeepfakeDetector()
+
+fingerprint_store.init_db()
 
 # Initialize Speech-to-Text Model
 import torch
@@ -1097,6 +1101,52 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
         except Exception as e:
             logger.exception(f"[WARN] STT Transcription failed: {e}")
 
+        # ── 3b. Replay-attack check: same audio previously submitted under a
+        # different advisor_id? Skip the expensive deepfake + gender model
+        # calls entirely if so — the decision is already made.
+        try:
+            with GLOBAL_PROCESS_LOCK:
+                current_fp = fingerprint.compute_fingerprint(tmp_path)
+            duplicate = fingerprint_store.find_cross_advisor_match(current_fp, advisor_id)
+        except Exception as e:
+            logger.exception(f"[WARN] Fingerprint check failed for Advisor ID: {advisor_id}: {e}")
+            current_fp = None
+            duplicate = None
+
+        if duplicate is not None:
+            reason_str = f"Replay Attack Detected: this audio was previously submitted under a different Advisor ID ({duplicate['advisor_id']})."
+            logger.info(f"[MANUAL REVIEW] {reason_str} Current Advisor ID: {advisor_id}.")
+            kept_path = _keep_for_manual_review(tmp_path)  # tmp_path itself no longer exists after this
+
+            result = {
+                'svm':      {'label': 'manual_review', 'confidence': 0.0},
+                'gbm':      {'label': 'manual_review', 'confidence': 0.0},
+                'rf':       {'label': 'manual_review', 'confidence': 0.0},
+                'ensemble': {'label': 'manual_review', 'confidence': 0.0, 'male_votes': 0, 'total_votes': 3},
+                'ai':       {'is_ai': False, 'confidence': 0.0, 'reason': reason_str, 'status': 'success'},
+                'status': 'manual_review',
+                'request_id': request_id,
+                'advisor_id': advisor_id,
+                'advisor_name': advisor_name,
+                'reason': reason_str,
+                'source_url': audio_url,
+            }
+            _dispatch_email_notification(result, f"{advisor_name} (ID:{advisor_id})", file_size_kb, kept_path)
+
+            n8n_result = {
+                'decision': 'uncertain',
+                'status': 1,
+                'accepted': False,
+                'advisor_id': advisor_id,
+                'advisor_name': advisor_name,
+                'source_url': audio_url,
+                'is_female': False,
+                'reason': reason_str
+            }
+
+            _add_to_cache(audio_url, n8n_result)
+            return log_req(JSONResponse(content=n8n_result))
+
         # ── 4. Extract features + predict ─────────────────────────────────────
         with GLOBAL_PROCESS_LOCK:
             t_df_start = time.time()
@@ -1138,6 +1188,8 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
                 'reason': reason_str
             }
 
+            if current_fp is not None:
+                fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, result.get('status', 'manual_review'))
             _add_to_cache(audio_url, n8n_result)
             return log_req(JSONResponse(content=n8n_result))
 
@@ -1167,6 +1219,8 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
                 'is_female':    False,
                 'reason':       'Male voice detected but name is female. Rejected for fake identity.' if gender_mismatch else 'Male voice detected. Only female voices are accepted.'
             }
+            if current_fp is not None:
+                fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, 'reject')
             _add_to_cache(audio_url, n8n_result)
             return log_req(JSONResponse(content=n8n_result))
 
@@ -1204,6 +1258,8 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
             'reason': 'Voice processed successfully.'
         }
 
+        if current_fp is not None:
+            fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, result.get('decision', 'unknown'))
         _add_to_cache(audio_url, n8n_result)
 
         return log_req(JSONResponse(content=n8n_result))

@@ -1,7 +1,7 @@
 import os
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import main
 
@@ -55,3 +55,87 @@ def test_predict_gender_accepts_at_85_1_percent_confidence():
     assert result['svm']['label'] == 'female'
     assert result['gbm']['label'] == 'female'
     assert result['rf']['label'] == 'female'
+
+
+def _read_fixture_bytes():
+    # NOTE: main.py's /predict-url handler has a pre-existing, unrelated
+    # "IMMEDIATE VOLUME CHECK" gate (from the primary-gender-model-upgrade
+    # plan) that rejects audio with max amplitude < 0.20 before the request
+    # ever reaches the STT step / replay-attack check added by this task.
+    # FIXTURE (female_test.wav) peaks at ~0.143, which trips that gate and
+    # short-circuits the request before any of the mocks below are relevant.
+    # We boost the gain (content/speech unchanged) so these tests actually
+    # exercise the replay-attack code path under test, rather than muting
+    # the gate itself or mocking away real STT processing.
+    import io
+    import soundfile as sf
+    import numpy as np
+
+    y, sr = sf.read(FIXTURE, dtype='float32')
+    peak = float(np.max(np.abs(y))) if len(y) else 0.0
+    if peak > 0:
+        y = y * (0.6 / peak)
+    buf = io.BytesIO()
+    sf.write(buf, y, sr, format='WAV', subtype='PCM_16')
+    return buf.getvalue()
+
+
+def test_predict_url_escalates_on_cross_advisor_duplicate(client):
+    audio_bytes = _read_fixture_bytes()
+    mock_response = MagicMock()
+    mock_response.read.return_value = audio_bytes
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+
+    headers = {"X-API-Key": main.config.API_KEY}
+
+    with patch('main._assert_public_url'), \
+         patch('main.urllib.request.urlopen', return_value=mock_response), \
+         patch('main.advanced_deepfake_detector.predict') as mock_deepfake, \
+         patch('gender_verifier.classify_gender') as mock_classify, \
+         patch('fingerprint.compute_fingerprint', return_value=b'\x00' * 32), \
+         patch('fingerprint_store.find_cross_advisor_match', return_value={'advisor_id': 'advisor-A', 'advisor_name': 'Advisor A'}), \
+         patch('fingerprint_store.store_fingerprint') as mock_store:
+
+        resp = client.post(
+            "/predict-url",
+            headers=headers,
+            json={"url": "http://test.local/clip-duplicate.wav", "userId": "advisor-B", "fullname": "Advisor B"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['decision'] == 'uncertain'
+    assert 'Replay Attack' in data['reason']
+    mock_deepfake.assert_not_called()
+    mock_classify.assert_not_called()
+    mock_store.assert_not_called()
+
+
+def test_predict_url_no_duplicate_proceeds_normally_and_stores_fingerprint(client):
+    audio_bytes = _read_fixture_bytes()
+    mock_response = MagicMock()
+    mock_response.read.return_value = audio_bytes
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+
+    headers = {"X-API-Key": main.config.API_KEY}
+
+    with patch('main._assert_public_url'), \
+         patch('main.urllib.request.urlopen', return_value=mock_response), \
+         patch('main.advanced_deepfake_detector.predict', return_value={'is_ai': False, 'confidence': 0.0, 'reason': 'Real Human Voice', 'status': 'success'}), \
+         patch('gender_verifier.classify_gender', return_value={'label': 'male', 'confidence': 99.0}), \
+         patch('fingerprint.compute_fingerprint', return_value=b'\x11' * 32), \
+         patch('fingerprint_store.find_cross_advisor_match', return_value=None), \
+         patch('fingerprint_store.store_fingerprint') as mock_store:
+
+        resp = client.post(
+            "/predict-url",
+            headers=headers,
+            json={"url": "http://test.local/clip-new.wav", "userId": "advisor-C", "fullname": "Advisor C"},
+        )
+
+    assert resp.status_code == 200
+    mock_store.assert_called_once()
+    call_args = mock_store.call_args[0]
+    assert call_args[1] == 'advisor-C'
