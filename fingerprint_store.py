@@ -8,9 +8,10 @@ import os
 import sqlite3
 from datetime import datetime
 
-from fingerprint import is_match
+import config
+from fingerprint import hamming_distance, MATCH_THRESHOLD
 
-DB_PATH = os.path.join(os.path.dirname(__file__), 'data', 'fingerprints.db')
+DB_PATH = os.path.join(config.STORAGE_BASE, "fingerprints.db")
 
 
 def init_db(db_path: str = DB_PATH):
@@ -34,7 +35,11 @@ def find_cross_advisor_match(fingerprint_bytes: bytes, advisor_id: str, db_path:
     """Returns the first row (as a dict) whose fingerprint is within
     MATCH_THRESHOLD Hamming distance of fingerprint_bytes AND whose
     advisor_id differs from the given advisor_id. Returns None if no such
-    row exists."""
+    row exists. Rows whose stored fingerprint has a different byte length
+    than fingerprint_bytes (e.g. from an older tuning of NUM_SEGMENTS/
+    NUM_MEL_BANDS) are skipped rather than raising, so a future retune
+    degrades gracefully instead of silently disabling detection for every
+    request."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
@@ -43,8 +48,13 @@ def find_cross_advisor_match(fingerprint_bytes: bytes, advisor_id: str, db_path:
     conn.close()
 
     for row in rows:
-        if is_match(fingerprint_bytes, row['fingerprint']):
-            return dict(row)
+        if len(row['fingerprint']) != len(fingerprint_bytes):
+            continue
+        distance = hamming_distance(fingerprint_bytes, row['fingerprint'])
+        if distance <= MATCH_THRESHOLD:
+            result = dict(row)
+            result['hamming_distance'] = distance
+            return result
     return None
 
 

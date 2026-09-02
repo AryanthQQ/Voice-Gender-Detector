@@ -1115,7 +1115,7 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
 
         if duplicate is not None:
             reason_str = f"Replay Attack Detected: this audio was previously submitted under a different Advisor ID ({duplicate['advisor_id']})."
-            logger.info(f"[MANUAL REVIEW] {reason_str} Current Advisor ID: {advisor_id}.")
+            logger.info(f"[MANUAL REVIEW] {reason_str} Current Advisor ID: {advisor_id}. Hamming distance: {duplicate.get('hamming_distance')}.")
             kept_path = _keep_for_manual_review(tmp_path)  # tmp_path itself no longer exists after this
 
             result = {
@@ -1141,7 +1141,7 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
                 'advisor_name': advisor_name,
                 'source_url': audio_url,
                 'is_female': False,
-                'reason': reason_str
+                'reason': 'This audio matches a previously submitted recording under a different advisor. Sent for manual review.'
             }
 
             _add_to_cache(audio_url, n8n_result)
@@ -1189,7 +1189,10 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
             }
 
             if current_fp is not None:
-                fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, result.get('status', 'manual_review'))
+                try:
+                    fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, result.get('status', 'manual_review'))
+                except Exception as e:
+                    logger.exception(f"[WARN] Failed to store fingerprint for Advisor ID: {advisor_id}: {e}")
             _add_to_cache(audio_url, n8n_result)
             return log_req(JSONResponse(content=n8n_result))
 
@@ -1220,7 +1223,10 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
                 'reason':       'Male voice detected but name is female. Rejected for fake identity.' if gender_mismatch else 'Male voice detected. Only female voices are accepted.'
             }
             if current_fp is not None:
-                fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, 'reject')
+                try:
+                    fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, 'reject')
+                except Exception as e:
+                    logger.exception(f"[WARN] Failed to store fingerprint for Advisor ID: {advisor_id}: {e}")
             _add_to_cache(audio_url, n8n_result)
             return log_req(JSONResponse(content=n8n_result))
 
@@ -1259,7 +1265,10 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
         }
 
         if current_fp is not None:
-            fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, result.get('decision', 'unknown'))
+            try:
+                fingerprint_store.store_fingerprint(current_fp, advisor_id, advisor_name, result.get('decision', 'unknown'))
+            except Exception as e:
+                logger.exception(f"[WARN] Failed to store fingerprint for Advisor ID: {advisor_id}: {e}")
         _add_to_cache(audio_url, n8n_result)
 
         return log_req(JSONResponse(content=n8n_result))

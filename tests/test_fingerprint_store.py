@@ -19,6 +19,7 @@ def test_finds_match_from_different_advisor(tmp_path):
     assert match is not None
     assert match['advisor_id'] == 'advisor-1'
     assert match['advisor_name'] == 'Alice'
+    assert match['hamming_distance'] == 0
 
 
 def test_ignores_match_from_same_advisor(tmp_path):
@@ -40,3 +41,15 @@ def test_near_duplicate_within_threshold_still_matches(tmp_path):
 
     match = find_cross_advisor_match(near_duplicate, 'advisor-2', db_path)
     assert match is not None
+    assert match['hamming_distance'] == 1
+
+
+def test_ignores_rows_with_mismatched_fingerprint_length(tmp_path):
+    db_path = os.path.join(str(tmp_path), 'test.db')
+    init_db(db_path)
+    old_length_fp = bytes([0b10101010] * 32)  # simulates a fingerprint from an older tuning
+    store_fingerprint(old_length_fp, 'advisor-1', 'Alice', 'female', db_path)
+
+    new_length_fp = bytes([0b10101010] * 16)  # current tuning's actual length
+    match = find_cross_advisor_match(new_length_fp, 'advisor-2', db_path)
+    assert match is None  # must not raise, must just skip the mismatched row

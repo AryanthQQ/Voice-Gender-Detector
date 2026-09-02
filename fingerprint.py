@@ -2,10 +2,16 @@
 fingerprint.py — Perceptual audio fingerprinting for replay-attack detection.
 
 Produces a fixed-length binary fingerprint from an audio file's mel-spectrogram,
-robust to minor re-encoding, resampling, or trimming (unlike a byte-level hash
-of the file, which any of those would defeat). Two fingerprints of the same
-underlying audio should differ by only a few bits; two genuinely different
-recordings should differ by many more.
+robust to minor re-encoding, resampling, symmetric trimming (equal amounts cut
+off both ends), and leading/trailing silence (stripped before fingerprinting).
+Two fingerprints of the same underlying audio should differ by only a few
+bits; two genuinely different recordings should differ by many more.
+
+Known limitation: an asymmetric content trim (cutting a chunk of actual
+speech off only one end, not silence) shifts the proportional time
+segmentation and can push the Hamming distance above MATCH_THRESHOLD,
+evading detection. Closing that would need overlapping sub-fingerprints
+instead of a single whole-clip one — out of scope for now.
 """
 import librosa
 import numpy as np
@@ -31,6 +37,9 @@ def compute_fingerprint(audio_path: str) -> bytes:
     """Computes a perceptual audio fingerprint for audio_path.
     Returns a fixed-length bytes object (NUM_SEGMENTS * NUM_MEL_BANDS bits, packed)."""
     y, sr = librosa.load(audio_path, sr=16000, mono=True)
+    y, _ = librosa.effects.trim(y, top_db=30)  # strip leading/trailing silence so a
+    # silent lead-in/lead-out doesn't shift the proportional time-segmentation below
+    # and corrupt every band's median (see fingerprint tuning notes for measurements)
     mel = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=NUM_MEL_BANDS)
     log_mel = librosa.power_to_db(mel)
 

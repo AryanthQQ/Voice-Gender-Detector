@@ -106,7 +106,7 @@ def test_predict_url_escalates_on_cross_advisor_duplicate(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data['decision'] == 'uncertain'
-    assert 'Replay Attack' in data['reason']
+    assert data['reason'] == 'This audio matches a previously submitted recording under a different advisor. Sent for manual review.'
     mock_deepfake.assert_not_called()
     mock_classify.assert_not_called()
     mock_store.assert_not_called()
