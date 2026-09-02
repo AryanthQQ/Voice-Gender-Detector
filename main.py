@@ -591,6 +591,7 @@ def predict_gender(audio_path: str, features: dict) -> dict:
     primary = gender_verifier.classify_gender(audio_path)
     primary_label = primary['label']
     primary_conf = primary['confidence'] / 100.0
+    logger.info(f"[PRIMARY] Wav2Vec2 verdict: {primary_label} {primary['confidence']}%")
 
     meanfun_hz = features['meanfun'] * 1000
     meanfreq_hz = features['meanfreq'] * 1000
@@ -643,7 +644,7 @@ async def predict(
     those threads run heavy model inference at once.
     """
     if not gender_verifier.is_loaded():
-        raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
+        raise HTTPException(status_code=503, detail="Primary gender model failed to load. Check server logs.")
 
     content = file.file.read()
     filename = file.filename
@@ -800,7 +801,7 @@ def _predict_sync(content: bytes, filename: str, advisor_name: str) -> JSONRespo
             result['saved_kb'] = round(file_size_kb, 1)
 
             if result['ensemble']['label'] == 'manual_review':
-                # Corroboration disagreed with the primary ensemble — keep for human review.
+                # Pitch safety filter escalated an ambiguous verdict — keep for human review.
                 kept_path = _keep_for_manual_review(saved_path)
                 result['saved_as'] = os.path.basename(kept_path)
                 _dispatch_email_notification(result, os.path.basename(kept_path), file_size_kb, kept_path)
@@ -924,7 +925,7 @@ async def predict_from_url(body: PredictUrlRequest):
           "is_female": true, "confidence": 91.2 }
     """
     if not gender_verifier.is_loaded():
-        raise HTTPException(status_code=503, detail="Models not loaded. Run train_model.py first.")
+        raise HTTPException(status_code=503, detail="Primary gender model failed to load. Check server logs.")
 
     audio_url    = body.url.strip()
     advisor_id   = str(body.userId)

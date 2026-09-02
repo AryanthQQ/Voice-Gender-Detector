@@ -1,6 +1,7 @@
 import os
 import pytest
 from fastapi.testclient import TestClient
+from unittest.mock import patch
 
 import main
 
@@ -35,3 +36,22 @@ def test_predict_returns_backward_compatible_response_shape(client):
         assert data[key]["label"] == data["ensemble"]["label"]
         assert data[key]["confidence"] == data["ensemble"]["confidence"]
     assert data["decision"] in ("accept", "reject", "uncertain")
+
+
+def test_predict_gender_manual_review_at_84_9_percent_confidence():
+    fake_features = {'meanfun': 0.21, 'meanfreq': 0.20, 'IQR': 0.05}  # 210Hz/200Hz - clearly female pitch range
+    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 84.9}):
+        result = main.predict_gender('/fake/path/does-not-matter.wav', fake_features)
+    assert result['ensemble']['label'] == 'manual_review'
+    assert result['decision'] == 'uncertain'
+
+
+def test_predict_gender_accepts_at_85_1_percent_confidence():
+    fake_features = {'meanfun': 0.21, 'meanfreq': 0.20, 'IQR': 0.05}  # 210Hz/200Hz - clearly female pitch range
+    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 85.1}):
+        result = main.predict_gender('/fake/path/does-not-matter.wav', fake_features)
+    assert result['ensemble']['label'] == 'female'
+    assert result['decision'] == 'accept'
+    assert result['svm']['label'] == 'female'
+    assert result['gbm']['label'] == 'female'
+    assert result['rf']['label'] == 'female'
