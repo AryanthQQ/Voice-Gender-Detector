@@ -46,7 +46,7 @@ MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", 2))
 
 # Public URL where this server is reachable — used to build the admin dashboard
 # link in manual_review email alerts. Set to your real domain in production.
-PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8000")
+PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://127.0.0.1:8003")
 
 # Audio retention: auto-decided requests (clean accept/reject) are deleted right
 # after processing — no audio is kept. Only manual_review audio is kept, and only

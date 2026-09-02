@@ -179,18 +179,18 @@ sudo systemctl enable --now voiceguard
 ```bash
 sudo systemctl status voiceguard
 journalctl -u voiceguard -f   # first start downloads the Whisper/Wav2Vec2 models — can take a few minutes
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8003/health
 ```
 
 ### 7. Expose it
 
-The app binds plain HTTP on `0.0.0.0:8000` with no TLS. Put nginx or caddy in
+The app binds plain HTTP on `0.0.0.0:8003` with no TLS. Put nginx or caddy in
 front for HTTPS on your real domain — that's also what `PUBLIC_BASE_URL`
-should point at. Only open port 8000 directly in the firewall if you're not
+should point at. Only open port 8003 directly in the firewall if you're not
 reverse-proxying:
 
 ```bash
-sudo ufw allow 8000/tcp
+sudo ufw allow 8003/tcp
 ```
 
 ### Updating
