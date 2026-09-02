@@ -531,15 +531,13 @@
     <header>
       <div class="logo-badge">
         <span class="dot"></span>
-        AI Voice Analysis — 3 ML Models
+        AI Voice Analysis
       </div>
       <h1>Voice Gender Detector</h1>
-      <p class="subtitle">Record your voice or upload an audio file. Our ensemble of 3 machine learning models will predict your voice gender in seconds.</p>
+      <p class="subtitle">Record your voice or upload an audio file. Our AI model will predict your voice gender in seconds.</p>
 
       <div class="accuracy-row">
-        <div class="acc-badge">SVM <span>98.9%</span></div>
-        <div class="acc-badge">Gradient Boosting <span>98.3%</span></div>
-        <div class="acc-badge">Random Forest <span>98.1%</span></div>
+        <div class="acc-badge">Wav2Vec2-XLSR Model</div>
       </div>
     </header>
 
@@ -600,16 +598,6 @@
 
       <div id="errorMsg"></div>
 
-      <div style="margin-bottom: 20px; text-align: left;">
-        <label for="modelSelect" style="color: rgba(255,255,255,0.7); font-size: 0.9rem; margin-bottom: 6px; display: block;">Active AI Model:</label>
-        <select id="modelSelect" onchange="if(lastData) showResults(lastData)" style="width: 100%; padding: 12px; background: rgba(255,255,255,0.05); color: white; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; outline: none; font-size: 1rem; cursor: pointer;">
-          <option value="ensemble" style="background: #0f172a;">Ensemble (3 Models combined) - Recommended</option>
-          <option value="svm" style="background: #0f172a;">Support Vector Machine (SVM)</option>
-          <option value="gbm" style="background: #0f172a;">Gradient Boosting (GBM)</option>
-          <option value="rf" style="background: #0f172a;">Random Forest (RF)</option>
-        </select>
-      </div>
-
       <button id="analyzeBtn" onclick="analyze()" disabled>
         🔍 Analyze Voice Gender
       </button>
@@ -650,25 +638,6 @@
         </div>
       </div>
 
-      <div class="models-title">Model Breakdown</div>
-      <div class="models-grid">
-        <div class="model-card">
-          <div class="model-name">Support Vector Machine</div>
-          <div class="model-result" id="svmResult">—</div>
-          <div class="model-conf" id="svmConf"></div>
-        </div>
-        <div class="model-card">
-          <div class="model-name">Gradient Boosting</div>
-          <div class="model-result" id="gbmResult">—</div>
-          <div class="model-conf" id="gbmConf"></div>
-        </div>
-        <div class="model-card">
-          <div class="model-name">Random Forest</div>
-          <div class="model-result" id="rfResult">—</div>
-          <div class="model-conf" id="rfConf"></div>
-        </div>
-      </div>
-
       <div class="models-title">Voice Frequency Analysis</div>
       <div class="freq-grid">
         <div class="freq-stat">
@@ -691,12 +660,12 @@
       <div class="info-card">
         <div class="info-icon">🧠</div>
         <div class="info-title">How it works</div>
-        <div class="info-text">Your audio is analyzed for 20 acoustic features including fundamental frequency, spectral entropy, and pitch variability using librosa DSP analysis.</div>
+        <div class="info-text">Your audio is analyzed by a pretrained Wav2Vec2 AI model, with pitch-based acoustic checks (fundamental frequency, formants) as an extra safety layer.</div>
       </div>
       <div class="info-card">
         <div class="info-icon">📊</div>
-        <div class="info-title">Training Data</div>
-        <div class="info-text">Models trained on 3,168 voice samples (50% male, 50% female) achieving up to 98.9% accuracy using an ensemble voting approach.</div>
+        <div class="info-title">AI Model</div>
+        <div class="info-text">Uses a pretrained Wav2Vec2-XLSR speech model for gender classification, backed by a pitch-based safety filter for ambiguous cases.</div>
       </div>
       <div class="info-card">
         <div class="info-icon">🔒</div>
@@ -1010,19 +979,6 @@
           throw new Error(data.reason || 'Unexpected server response. Please try again.');
         }
         
-        // Auto-select the model with the highest confidence score
-        let bestModel = 'ensemble';
-        let maxConf = data.ensemble.confidence;
-        
-        const subModels = ['svm', 'gbm', 'rf'];
-        for (const m of subModels) {
-          if (data[m] && data[m].confidence > maxConf) {
-            maxConf = data[m].confidence;
-            bestModel = m;
-          }
-        }
-        document.getElementById('modelSelect').value = bestModel;
-
         showResults(data);
 
       } catch (e) {
@@ -1038,12 +994,10 @@
       const card = document.getElementById('resultsCard');
       card.classList.add('visible');
 
-      const { ensemble, svm, gbm, rf, features } = data;
-      
-      const selectedModel = document.getElementById('modelSelect').value;
-      const activeModelData = data[selectedModel];
-      const label = activeModelData.label;
-      const conf = activeModelData.confidence;
+      const { ensemble, features } = data;
+
+      const label = ensemble.label;
+      const conf = ensemble.confidence;
 
       // Main gender badge
       const badge = document.getElementById('genderBadge');
@@ -1112,23 +1066,12 @@
         document.getElementById('pillTelegramOff').style.display = 'inline-flex';
       }
 
-      // Models
-      setModelCard('svm', svm);
-      setModelCard('gbm', gbm);
-      setModelCard('rf', rf);
-
       // Frequencies
       document.getElementById('freqMeanfun').textContent = (features.meanfun_hz || 0).toFixed(0) + ' Hz';
       document.getElementById('freqMeanfreq').textContent = (features.meanfreq_hz || 0).toFixed(0) + ' Hz';
       document.getElementById('freqIQR').textContent = (features.IQR || 0).toFixed(4);
 
       card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-
-    function setModelCard(id, model) {
-      document.getElementById(`${id}Result`).textContent = model.label.charAt(0).toUpperCase() + model.label.slice(1);
-      document.getElementById(`${id}Result`).className = `model-result ${model.label}`;
-      document.getElementById(`${id}Conf`).textContent = model.confidence.toFixed(1) + '% confidence';
     }
 
     function showError(msg) {
