@@ -173,3 +173,25 @@ def test_predict_url_no_duplicate_proceeds_normally_and_stores_fingerprint(clien
     mock_store.assert_called_once()
     call_args = mock_store.call_args[0]
     assert call_args[1] == 'advisor-C'
+
+
+def test_predict_gender_real_corroboration_on_female_range_audio_stays_accepted():
+    """Runs the REAL classical ensemble (not mocked) against real features
+    extracted from a genuine female-pitch-range audio file, to confirm
+    corroboration doesn't itself cause an unwanted escalation on
+    legitimate content. Only the primary model is mocked (to force a
+    'female' verdict deterministically) — everything else is real."""
+    fixture_path = os.path.join(os.path.dirname(__file__), '..', 'test_human.mp3')
+    y, sr = main.safe_load_audio(fixture_path, sr=16000)
+    tmp_wav = os.path.join(os.environ.get('TEMP', '.'), 'female_range_corroboration_test.wav')
+    import soundfile as sf
+    sf.write(tmp_wav, y, 16000)
+    real_features = main.extract_features(tmp_wav)
+
+    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 99.0}):
+        result = main.predict_gender(tmp_wav, real_features)
+
+    assert result['decision'] == 'accept', (
+        f"Real classical-ensemble corroboration unexpectedly escalated a "
+        f"female-range voice; result: {result}"
+    )

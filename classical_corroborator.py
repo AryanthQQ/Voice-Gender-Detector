@@ -24,19 +24,31 @@ _feature_order = None
 
 
 def load_models():
-    """Loads the classical models if not already loaded. Idempotent."""
+    """Loads the classical models if not already loaded. Idempotent.
+    If loading fails partway through, resets all five globals back to
+    None rather than leaving a partial load in place — otherwise
+    is_loaded() would report True (since it only checked _svm_model)
+    while corroborate() silently crashes on a missing model, and the
+    fail-closed exception handler in main.py would turn every female
+    verdict into manual_review indefinitely with no health signal
+    indicating anything was wrong."""
     global _svm_model, _gbm_model, _rf_model, _scaler, _feature_order
-    if _svm_model is not None:
+    if is_loaded():
         return
-    _svm_model     = joblib.load(os.path.join(MODELS_DIR, 'svm_model.pkl'))
-    _gbm_model     = joblib.load(os.path.join(MODELS_DIR, 'gbm_model.pkl'))
-    _rf_model      = joblib.load(os.path.join(MODELS_DIR, 'rf_model.pkl'))
-    _scaler        = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
-    _feature_order = joblib.load(os.path.join(MODELS_DIR, 'features.pkl'))
+    try:
+        _svm_model     = joblib.load(os.path.join(MODELS_DIR, 'svm_model.pkl'))
+        _gbm_model     = joblib.load(os.path.join(MODELS_DIR, 'gbm_model.pkl'))
+        _rf_model      = joblib.load(os.path.join(MODELS_DIR, 'rf_model.pkl'))
+        _rf_model.n_jobs = 1
+        _scaler        = joblib.load(os.path.join(MODELS_DIR, 'scaler.pkl'))
+        _feature_order = joblib.load(os.path.join(MODELS_DIR, 'features.pkl'))
+    except Exception:
+        _svm_model = _gbm_model = _rf_model = _scaler = _feature_order = None
+        raise
 
 
 def is_loaded() -> bool:
-    return _svm_model is not None
+    return all(x is not None for x in (_svm_model, _gbm_model, _rf_model, _scaler, _feature_order))
 
 
 def corroborate(features: dict) -> dict:
@@ -49,8 +61,15 @@ def corroborate(features: dict) -> dict:
     feat_vec = np.array([[features[f] for f in _feature_order]])
     feat_scaled = _scaler.transform(feat_vec)
 
-    # SVM was trained on unscaled features; GBM/RF on scaled — matches the
-    # exact behavior of the original (pre-retirement) ensemble code.
+    # svm_model.pkl is a full sklearn Pipeline (StandardScaler + SVC) that
+    # scales internally, so it correctly takes the raw feat_vec — passing
+    # it feat_scaled would double-scale. GBM and RF were actually trained
+    # on UNSCALED features (scaler.pkl was fit afterward and never used to
+    # train them), so feeding them feat_scaled here is out-of-distribution
+    # relative to their training data — this is preserved, not fixed, to
+    # match the pre-retirement ensemble's exact behavior; switching GBM/RF
+    # to unscaled input is a follow-up that needs its own validation on a
+    # broader dataset (including female audio), not a change to make here.
     svm_prob = _svm_model.predict_proba(feat_vec)[0]
     gbm_prob = _gbm_model.predict_proba(feat_scaled)[0]
     rf_prob  = _rf_model.predict_proba(feat_scaled)[0]

@@ -1,9 +1,8 @@
 import os
 import pytest
+from unittest.mock import patch
 
 from classical_corroborator import load_models, is_loaded, corroborate, should_escalate
-
-FIXTURE = os.path.join(os.path.dirname(__file__), '..', 'female_test.wav')
 
 # Real feature vectors extracted from actual audio, used to exercise corroborate()
 # against the real loaded models without needing extract_features() here.
@@ -104,3 +103,30 @@ def test_should_escalate_false_just_below_90_percent_confidence():
         'male_votes': 1,
     }
     assert should_escalate(corroboration) is False
+
+
+def test_partial_load_failure_resets_cleanly_and_can_be_retried():
+    import classical_corroborator as cc
+    # Save real state to restore after this test
+    saved = (cc._svm_model, cc._gbm_model, cc._rf_model, cc._scaler, cc._feature_order)
+    cc._svm_model = cc._gbm_model = cc._rf_model = cc._scaler = cc._feature_order = None
+
+    real_load = cc.joblib.load
+    call_count = [0]
+    def flaky_load(path):
+        call_count[0] += 1
+        if call_count[0] == 3:  # fail on rf_model.pkl (3rd call)
+            raise IOError("simulated corrupt file")
+        return real_load(path)
+
+    try:
+        with patch('classical_corroborator.joblib.load', side_effect=flaky_load):
+            with pytest.raises(IOError):
+                cc.load_models()
+        assert cc.is_loaded() is False  # must not report loaded after a partial failure
+
+        # Retry should work now that the mock is gone
+        cc.load_models()
+        assert cc.is_loaded() is True
+    finally:
+        cc._svm_model, cc._gbm_model, cc._rf_model, cc._scaler, cc._feature_order = saved
