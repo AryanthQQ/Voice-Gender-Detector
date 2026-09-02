@@ -84,3 +84,23 @@ def test_corroborate_gets_the_original_false_accept_case_right():
     assert should_escalate(result) is True, (
         f"Classical ensemble should have flagged this known false-accept case, got: {result}"
     )
+
+
+def test_should_escalate_true_at_exactly_90_percent_confidence():
+    corroboration = {
+        'svm': {'label': 'male', 'confidence': 90.0},
+        'gbm': {'label': 'female', 'confidence': 60.0},
+        'rf':  {'label': 'female', 'confidence': 55.0},
+        'male_votes': 1,
+    }
+    assert should_escalate(corroboration) is True
+
+
+def test_should_escalate_false_just_below_90_percent_confidence():
+    corroboration = {
+        'svm': {'label': 'male', 'confidence': 89.9},
+        'gbm': {'label': 'female', 'confidence': 60.0},
+        'rf':  {'label': 'female', 'confidence': 55.0},
+        'male_votes': 1,
+    }
+    assert should_escalate(corroboration) is False
