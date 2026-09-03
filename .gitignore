@@ -75,4 +75,7 @@ recordings/
 # ── Scratch / temporary dev scripts ─────────────────────────────────────────
 scratch/
 
+# ── Cached audio embeddings (deepfake detector) ───────────────────────────────
+*.npy
+
 .superpowers/

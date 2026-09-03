@@ -114,7 +114,14 @@ class AdvancedDeepfakeDetector:
         """Same response shape as predict(), but scores every 3-second
         window of the clip independently and takes the MAXIMUM fake
         probability across windows as the final score — any one
-        fake-sounding segment is enough to flag the whole clip."""
+        fake-sounding segment is enough to flag the whole clip.
+
+        NOT currently wired into predict() / main.py (see the project's
+        evaluation report — the baseline single-embedding approach won the
+        A/B comparison). If this is ever wired in, extend main.py's
+        _delete_audio() to also glob and remove f"{path}.win*.npy" —
+        it currently only deletes f"{path}.npy", so per-window cache
+        files from this method would otherwise leak on disk forever."""
         if not self.is_trained:
             if os.path.exists("models/wav2vec_xgb.pkl"):
                 self.classifier = joblib.load("models/wav2vec_xgb.pkl")
