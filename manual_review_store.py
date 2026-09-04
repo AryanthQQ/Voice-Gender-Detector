@@ -7,7 +7,7 @@ and open it.
 """
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import config
 
@@ -47,3 +47,15 @@ def list_pending_reviews(db_path: str = DB_PATH) -> list:
     rows = conn.execute("SELECT * FROM pending_reviews ORDER BY created_at DESC, id DESC").fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def purge_expired_reviews(max_age_days: int, db_path: str = DB_PATH) -> int:
+    """Deletes pending_reviews rows older than max_age_days. Returns the
+    number of rows deleted."""
+    cutoff = (datetime.now() - timedelta(days=max_age_days)).isoformat()
+    conn = sqlite3.connect(db_path)
+    cursor = conn.execute("DELETE FROM pending_reviews WHERE created_at < ?", (cutoff,))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted

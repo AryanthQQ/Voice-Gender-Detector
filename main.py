@@ -279,6 +279,23 @@ def _purge_expired_manual_review():
 
 threading.Thread(target=_purge_expired_manual_review, daemon=True).start()
 
+
+def _purge_expired_url_reviews():
+    """Background loop: deletes /predict-url manual-review metadata rows
+    older than the retention window — same policy as the audio retention
+    this store replaced, so the two mechanisms stay coherent."""
+    while True:
+        try:
+            deleted = manual_review_store.purge_expired_reviews(config.MANUAL_REVIEW_RETENTION_DAYS)
+            if deleted:
+                logger.info(f"[CLEANUP] Purged {deleted} expired /predict-url manual-review row(s).")
+        except Exception as e:
+            logger.exception(f"[CLEANUP] /predict-url manual-review purge loop error: {e}")
+        time.sleep(3600)  # check hourly
+
+
+threading.Thread(target=_purge_expired_url_reviews, daemon=True).start()
+
 # ── Simple In-Memory Cache for n8n Loop Protection ────────────────────────────
 processed_cache = {}
 
@@ -1146,7 +1163,10 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
         if duplicate is not None:
             reason_str = f"Replay Attack Detected: this audio was previously submitted under a different Advisor ID ({duplicate['advisor_id']})."
             logger.info(f"[MANUAL REVIEW] {reason_str} Current Advisor ID: {advisor_id}. Hamming distance: {duplicate.get('hamming_distance')}.")
-            manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, reason_str)
+            try:
+                manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, reason_str)
+            except Exception as e:
+                logger.exception(f"[WARN] Failed to record pending manual review for Advisor ID: {advisor_id}: {e}")
             _delete_audio(tmp_path)
 
             result = {
@@ -1198,7 +1218,10 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
             # rate on real voices outside its training distribution, so escalate to manual_review
             # instead of auto-rejecting a real advisor.
             logger.info(f"[MANUAL REVIEW] Deepfake model flagged audio for Advisor ID: {advisor_id}, escalating instead of auto-rejecting. Reason: {reason_str}")
-            manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, reason_str)
+            try:
+                manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, reason_str)
+            except Exception as e:
+                logger.exception(f"[WARN] Failed to record pending manual review for Advisor ID: {advisor_id}: {e}")
             _delete_audio(tmp_path)
 
             result['status'] = 'manual_review'
@@ -1279,7 +1302,14 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
 
         # ── 7. Email notification (background) + audio retention ───────────
         if result['status'] == 'manual_review':
-            manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, result.get('reason', 'Ambiguous voice'))
+            if gender_mismatch:
+                manual_review_reason = f"Gender/name mismatch: voice reads {label} but advisor name '{advisor_name}' suggests {name_gender.replace('_', ' ')}. Possible identity fraud."
+            else:
+                manual_review_reason = "Ambiguous voice — model confidence too low to auto-decide."
+            try:
+                manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, manual_review_reason)
+            except Exception as e:
+                logger.exception(f"[WARN] Failed to record pending manual review for Advisor ID: {advisor_id}: {e}")
             _delete_audio(tmp_path)
             _dispatch_email_notification(result, display_name, file_size_kb, None)
         else:
@@ -1332,8 +1362,10 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
         }), err=str(e))
 
     finally:
-        # Always clean up the temp file and its embedding cache (no-op if it was
-        # already moved into MANUAL_REVIEW_DIR above).
+        # Always clean up the temp file and its embedding cache — a no-op if
+        # this function's own code already deleted it above (manual_review
+        # cases now record metadata via manual_review_store instead of
+        # moving the file into MANUAL_REVIEW_DIR, which only /predict uses).
         if tmp_path and os.path.exists(tmp_path):
             _delete_audio(tmp_path)
             logger.info(f"[URL] Temp file cleaned up: {tmp_path}")

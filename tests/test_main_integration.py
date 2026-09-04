@@ -228,7 +228,9 @@ def test_predict_url_manual_review_stores_metadata_not_local_audio(client):
     mock_add_review.assert_called_once()
     call_args = mock_add_review.call_args[0]
     assert call_args[0] == 'advisor-D'
+    assert call_args[1] == 'Advisor D'
     assert call_args[2] == 'http://test.local/clip-deepfake.wav'
+    assert 'AI' in call_args[3] or 'Synthetic' in call_args[3]
 
 
 def test_predict_url_replay_attack_stores_metadata_not_local_audio(client):
@@ -264,7 +266,9 @@ def test_predict_url_replay_attack_stores_metadata_not_local_audio(client):
     mock_add_review.assert_called_once()
     call_args = mock_add_review.call_args[0]
     assert call_args[0] == 'advisor-F'
+    assert call_args[1] == 'Advisor F'
     assert call_args[2] == 'http://test.local/clip-replay.wav'
+    assert 'Replay' in call_args[3]
 
 
 def test_predict_url_ambiguous_gender_stores_metadata_not_local_audio(client):
@@ -299,7 +303,44 @@ def test_predict_url_ambiguous_gender_stores_metadata_not_local_audio(client):
     mock_add_review.assert_called_once()
     call_args = mock_add_review.call_args[0]
     assert call_args[0] == 'advisor-G'
+    assert call_args[1] == 'Advisor G'
     assert call_args[2] == 'http://test.local/clip-ambiguous.wav'
+    assert 'confidence too low' in call_args[3] or 'confidence' in call_args[3].lower()
+
+
+def test_predict_url_clean_reject_creates_no_pending_review_row():
+    import manual_review_store
+    audio_bytes = _read_fixture_bytes()
+    mock_response = MagicMock()
+    mock_response.read.return_value = audio_bytes
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+
+    headers = {"X-API-Key": main.config.API_KEY}
+    import tempfile
+    import os as os_module
+    tmp_db = os_module.path.join(tempfile.gettempdir(), 'test_no_row_on_reject.db')
+    manual_review_store.init_db(tmp_db)
+
+    with patch('main._assert_public_url'), \
+         patch('main.urllib.request.urlopen', return_value=mock_response), \
+         patch('main.advanced_deepfake_detector.predict', return_value={'is_ai': False, 'confidence': 0.0, 'reason': 'Real Human Voice (0.0%)', 'status': 'success'}), \
+         patch('gender_verifier.classify_gender', return_value={'label': 'male', 'confidence': 99.0}), \
+         patch('fingerprint.compute_fingerprint', return_value=b'\x55' * 16), \
+         patch('fingerprint_store.find_cross_advisor_match', return_value=None), \
+         patch('fingerprint_store.store_fingerprint'), \
+         patch('manual_review_store.DB_PATH', tmp_db), \
+         patch('manual_review_store.add_pending_review') as mock_add_review:
+
+        resp = TestClient(main.app).post(
+            "/predict-url",
+            headers=headers,
+            json={"url": "http://test.local/clip-clean-reject.wav", "userId": "advisor-H", "fullname": "Advisor H"},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()['decision'] == 'reject'
+    mock_add_review.assert_not_called()
 
 
 def test_predict_manual_review_still_uses_local_retention_unaffected(client):
