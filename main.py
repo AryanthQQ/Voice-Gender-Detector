@@ -131,6 +131,7 @@ from deepfake_detector_v2 import AdvancedDeepfakeDetector
 import gender_guesser.detector as gender
 import fingerprint
 import fingerprint_store
+import manual_review_store
 import classical_corroborator
 
 # Limit entire request pipeline to N concurrent tasks to prevent RAM exhaustion (tune via MAX_CONCURRENT_JOBS)
@@ -154,6 +155,7 @@ gender_detector = gender.Detector()
 advanced_deepfake_detector = AdvancedDeepfakeDetector()
 
 fingerprint_store.init_db()
+manual_review_store.init_db()
 
 # Initialize Speech-to-Text Model
 import torch
@@ -919,6 +921,16 @@ async def list_recordings():
     return JSONResponse(content={'total': len(files), 'recordings': files})
 
 
+@app.get("/api/admin/pending-url-reviews", dependencies=[Depends(require_api_key)])
+async def list_pending_url_reviews():
+    """Admin endpoint: lists pending manual_review entries from /predict-url.
+    Unlike /recordings (which lists locally-stored /predict audio), these
+    entries carry only the caller's original source_url — /predict-url
+    never retains a local copy of the audio."""
+    reviews = manual_review_store.list_pending_reviews()
+    return JSONResponse(content={'total': len(reviews), 'reviews': reviews})
+
+
 from typing import Union
 
 class PredictUrlRequest(BaseModel):
@@ -1134,7 +1146,8 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
         if duplicate is not None:
             reason_str = f"Replay Attack Detected: this audio was previously submitted under a different Advisor ID ({duplicate['advisor_id']})."
             logger.info(f"[MANUAL REVIEW] {reason_str} Current Advisor ID: {advisor_id}. Hamming distance: {duplicate.get('hamming_distance')}.")
-            kept_path = _keep_for_manual_review(tmp_path)  # tmp_path itself no longer exists after this
+            manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, reason_str)
+            _delete_audio(tmp_path)
 
             result = {
                 'svm':      {'label': 'manual_review', 'confidence': 0.0},
@@ -1149,7 +1162,7 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
                 'reason': reason_str,
                 'source_url': audio_url,
             }
-            _dispatch_email_notification(result, f"{advisor_name} (ID:{advisor_id})", file_size_kb, kept_path)
+            _dispatch_email_notification(result, f"{advisor_name} (ID:{advisor_id})", file_size_kb, None)
 
             n8n_result = {
                 'decision': 'uncertain',
@@ -1185,7 +1198,8 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
             # rate on real voices outside its training distribution, so escalate to manual_review
             # instead of auto-rejecting a real advisor.
             logger.info(f"[MANUAL REVIEW] Deepfake model flagged audio for Advisor ID: {advisor_id}, escalating instead of auto-rejecting. Reason: {reason_str}")
-            kept_path = _keep_for_manual_review(tmp_path)  # tmp_path itself no longer exists after this
+            manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, reason_str)
+            _delete_audio(tmp_path)
 
             result['status'] = 'manual_review'
             result['request_id'] = request_id
@@ -1193,7 +1207,7 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
             result['advisor_name'] = advisor_name
             result['reason'] = reason_str
             result['source_url'] = audio_url
-            _dispatch_email_notification(result, f"{advisor_name} (ID:{advisor_id})", file_size_kb, kept_path)
+            _dispatch_email_notification(result, f"{advisor_name} (ID:{advisor_id})", file_size_kb, None)
 
             n8n_result = {
                 'decision': 'uncertain',
@@ -1265,8 +1279,9 @@ def _predict_url_sync(content: bytes, audio_url: str, advisor_id: str, advisor_n
 
         # ── 7. Email notification (background) + audio retention ───────────
         if result['status'] == 'manual_review':
-            kept_path = _keep_for_manual_review(tmp_path)  # tmp_path itself no longer exists after this
-            _dispatch_email_notification(result, display_name, file_size_kb, kept_path)
+            manual_review_store.add_pending_review(advisor_id, advisor_name, audio_url, result.get('reason', 'Ambiguous voice'))
+            _delete_audio(tmp_path)
+            _dispatch_email_notification(result, display_name, file_size_kb, None)
         else:
             # Auto-decided (clean accept) — no audio is retained; finally: below deletes tmp_path.
             _dispatch_email_notification(result, display_name, file_size_kb, tmp_path)

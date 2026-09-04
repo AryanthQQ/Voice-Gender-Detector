@@ -195,3 +195,149 @@ def test_predict_gender_real_corroboration_on_female_range_audio_stays_accepted(
         f"Real classical-ensemble corroboration unexpectedly escalated a "
         f"female-range voice; result: {result}"
     )
+
+
+def test_predict_url_manual_review_stores_metadata_not_local_audio(client):
+    audio_bytes = _read_fixture_bytes()
+    mock_response = MagicMock()
+    mock_response.read.return_value = audio_bytes
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+
+    headers = {"X-API-Key": main.config.API_KEY}
+
+    with patch('main._assert_public_url'), \
+         patch('main.urllib.request.urlopen', return_value=mock_response), \
+         patch('main.advanced_deepfake_detector.predict', return_value={'is_ai': True, 'confidence': 90.0, 'reason': 'AI/Synthetic voice detected (90.0%)', 'status': 'success'}), \
+         patch('fingerprint.compute_fingerprint', return_value=b'\x22' * 16), \
+         patch('fingerprint_store.find_cross_advisor_match', return_value=None), \
+         patch('fingerprint_store.store_fingerprint'), \
+         patch('main._keep_for_manual_review') as mock_keep_local, \
+         patch('manual_review_store.add_pending_review') as mock_add_review:
+
+        resp = client.post(
+            "/predict-url",
+            headers=headers,
+            json={"url": "http://test.local/clip-deepfake.wav", "userId": "advisor-D", "fullname": "Advisor D"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['decision'] == 'uncertain'
+    mock_keep_local.assert_not_called()
+    mock_add_review.assert_called_once()
+    call_args = mock_add_review.call_args[0]
+    assert call_args[0] == 'advisor-D'
+    assert call_args[2] == 'http://test.local/clip-deepfake.wav'
+
+
+def test_predict_url_replay_attack_stores_metadata_not_local_audio(client):
+    audio_bytes = _read_fixture_bytes()
+    mock_response = MagicMock()
+    mock_response.read.return_value = audio_bytes
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+
+    headers = {"X-API-Key": main.config.API_KEY}
+
+    with patch('main._assert_public_url'), \
+         patch('main.urllib.request.urlopen', return_value=mock_response), \
+         patch('main.advanced_deepfake_detector.predict') as mock_deepfake, \
+         patch('gender_verifier.classify_gender') as mock_classify, \
+         patch('fingerprint.compute_fingerprint', return_value=b'\x33' * 16), \
+         patch('fingerprint_store.find_cross_advisor_match', return_value={'advisor_id': 'advisor-E', 'advisor_name': 'Advisor E'}), \
+         patch('main._keep_for_manual_review') as mock_keep_local, \
+         patch('manual_review_store.add_pending_review') as mock_add_review:
+
+        resp = client.post(
+            "/predict-url",
+            headers=headers,
+            json={"url": "http://test.local/clip-replay.wav", "userId": "advisor-F", "fullname": "Advisor F"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['decision'] == 'uncertain'
+    mock_deepfake.assert_not_called()
+    mock_classify.assert_not_called()
+    mock_keep_local.assert_not_called()
+    mock_add_review.assert_called_once()
+    call_args = mock_add_review.call_args[0]
+    assert call_args[0] == 'advisor-F'
+    assert call_args[2] == 'http://test.local/clip-replay.wav'
+
+
+def test_predict_url_ambiguous_gender_stores_metadata_not_local_audio(client):
+    audio_bytes = _read_fixture_bytes()
+    mock_response = MagicMock()
+    mock_response.read.return_value = audio_bytes
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+
+    headers = {"X-API-Key": main.config.API_KEY}
+
+    with patch('main._assert_public_url'), \
+         patch('main.urllib.request.urlopen', return_value=mock_response), \
+         patch('main.advanced_deepfake_detector.predict', return_value={'is_ai': False, 'confidence': 0.0, 'reason': 'Real Human Voice (0.0%)', 'status': 'success'}), \
+         patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 60.0}), \
+         patch('fingerprint.compute_fingerprint', return_value=b'\x44' * 16), \
+         patch('fingerprint_store.find_cross_advisor_match', return_value=None), \
+         patch('fingerprint_store.store_fingerprint'), \
+         patch('main._keep_for_manual_review') as mock_keep_local, \
+         patch('manual_review_store.add_pending_review') as mock_add_review:
+
+        resp = client.post(
+            "/predict-url",
+            headers=headers,
+            json={"url": "http://test.local/clip-ambiguous.wav", "userId": "advisor-G", "fullname": "Advisor G"},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['decision'] == 'uncertain'
+    mock_keep_local.assert_not_called()
+    mock_add_review.assert_called_once()
+    call_args = mock_add_review.call_args[0]
+    assert call_args[0] == 'advisor-G'
+    assert call_args[2] == 'http://test.local/clip-ambiguous.wav'
+
+
+def test_predict_manual_review_still_uses_local_retention_unaffected(client):
+    """Hard boundary check: /predict (no external URL to fall back on)
+    must keep using local retention for manual_review — this plan only
+    changes /predict-url. Forces a manual_review via a low-confidence
+    primary verdict (same mechanism as the existing
+    test_predict_gender_manual_review_at_84_9_percent_confidence test,
+    but exercised through the full /predict HTTP endpoint here instead of
+    calling predict_gender() directly, since that's what actually proves
+    _keep_for_manual_review gets called)."""
+    with patch('gender_verifier.classify_gender', return_value={'label': 'female', 'confidence': 60.0}), \
+         patch('main.advanced_deepfake_detector.predict', return_value={'is_ai': False, 'confidence': 0.0, 'reason': 'Real Human Voice (0.0%)', 'status': 'success'}), \
+         patch('main._keep_for_manual_review', wraps=main._keep_for_manual_review) as mock_keep_local:
+        with open(FIXTURE, "rb") as f:
+            resp = client.post(
+                "/predict",
+                files={"file": ("female_test.wav", f, "audio/wav")},
+                data={"advisor_name": "Test Advisor"},
+            )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['ensemble']['label'] == 'manual_review'
+    mock_keep_local.assert_called_once()
+
+
+def test_pending_url_reviews_endpoint_requires_auth(client):
+    resp = client.get("/api/admin/pending-url-reviews")
+    assert resp.status_code == 401
+
+
+def test_pending_url_reviews_endpoint_returns_list(client):
+    headers = {"X-API-Key": main.config.API_KEY}
+    with patch('manual_review_store.list_pending_reviews', return_value=[
+        {'id': 1, 'advisor_id': 'advisor-1', 'advisor_name': 'Alice', 'source_url': 'https://s3.example.com/a.wav', 'reason': 'test', 'created_at': '2026-09-04T00:00:00'}
+    ]):
+        resp = client.get("/api/admin/pending-url-reviews", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data['total'] == 1
+    assert data['reviews'][0]['advisor_id'] == 'advisor-1'
